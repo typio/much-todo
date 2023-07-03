@@ -1,0 +1,5 @@
+http-server/zig-cache/
+http-server/zig-out/
+
+server.crt
+server.key
