@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const cli = @import("zig-cli");
+
 const c = @cImport({
     @cInclude("signal.h");
 
@@ -11,12 +13,40 @@ const c = @cImport({
     @cInclude("openssl/bio.h");
 });
 
+const ServerModes = enum { debug, release };
+const ServerConfig = struct {
+    mode: ServerModes,
+    port: []const u8,
+};
+
+var server_config = ServerConfig{ .mode = ServerModes.debug, .port = "8080" };
+
+const ServerCliOptions = struct {
+    server_mode: cli.Option = .{
+        .long_name = "mode",
+        .short_alias = 'm',
+        .help = "server mode (debug or release)",
+        .value = cli.OptionValue{ .string = "debug" },
+    },
+    port: cli.Option = .{
+        .long_name = "port",
+        .short_alias = 'p',
+        .help = "port to bind to",
+        .value = cli.OptionValue{ .string = "8080" },
+    },
+};
+
+var server_cli_options = ServerCliOptions{};
+
+var app = &cli.App{
+    .name = "much-todo http server",
+    .options = &.{ &server_cli_options.server_mode, &server_cli_options.port },
+    .action = startServer,
+};
+
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
-const ServerModes = enum { debug, release };
-
-var server_mode = ServerModes.debug;
 var running: bool = true;
 
 // Signal handler for SIGINT (Ctrl+C)
@@ -45,7 +75,7 @@ fn initializeServer() !*c.SSL_CTX {
 }
 
 fn loadCertificates(ctx: *c.SSL_CTX) !void {
-    if (server_mode != ServerModes.release) return;
+    if (server_config.mode != ServerModes.release) return;
 
     if (c.SSL_CTX_use_certificate_file(ctx, "/etc/letsencrypt/live/muchtodo.app/fullchain.pem", c.SSL_FILETYPE_PEM) <= 0 or
         c.SSL_CTX_use_PrivateKey_file(ctx, "/etc/letsencrypt/live/muchtodo.app/privkey.pem", c.SSL_FILETYPE_PEM) <= 0)
@@ -56,13 +86,9 @@ fn loadCertificates(ctx: *c.SSL_CTX) !void {
 }
 
 fn bindAndListen() !*c.BIO {
-    const port: [*c]const u8 = switch (server_mode) {
-        ServerModes.release => "443",
-        else => "8080",
-    };
-    std.debug.print("Port: {s}\n", .{port});
+    std.debug.print("Port: {s}\n", .{server_config.port});
 
-    const socket = c.BIO_new_accept(port);
+    const socket = c.BIO_new_accept(@ptrCast(server_config.port));
     _ = c.BIO_set_accept_bios(socket, null);
     if (c.BIO_do_accept(socket) <= 0) {
         std.debug.print("Failed to bind.\n", .{});
@@ -137,7 +163,7 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
 
     logIp(client) catch std.log.err("Failed to log IP\n", .{});
 
-    if (server_mode == ServerModes.release) {
+    if (server_config.mode == ServerModes.release) {
         ssl = c.SSL_new(ctx);
         c.SSL_set_bio(ssl, client, client);
 
@@ -150,8 +176,42 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
         }
     }
 
-    const responseHeaders = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
-    const responseBody = "<html><body><h1 style=\"color:dodgerblue; text-align:center;\">Hello, world!</h1></body></html>";
+    const filename = "client_ips.log";
+    const file = try std.fs.cwd().openFile(filename, .{ .mode = std.fs.File.OpenMode.read_only });
+    defer file.close();
+
+    const contents = try file.reader().readAllAlloc(
+        allocator,
+        1024 * 1024 * 10,
+    );
+    var ip_strings = std.mem.tokenizeScalar(u8, contents, '\n');
+    var unique_ip_count: usize = 0;
+    var view_count: usize = 0;
+    var unique_ip_set = std.BufSet.init(allocator);
+    while (ip_strings.next()) |ip_string| {
+        if (ip_string.len == 0) continue;
+        view_count += 1;
+
+        var ip_log_parts = std.mem.tokenizeScalar(u8, ip_string, ' ');
+        var ip = ip_log_parts.next().?;
+
+        if (!unique_ip_set.contains(ip)) {
+            unique_ip_count += 1;
+            try unique_ip_set.insert(ip);
+        }
+    }
+
+    const responseBody = try std.fmt.allocPrint(allocator,
+        \\<html>
+        \\  <link rel="icon" href="data:image/x-icon;,">
+        \\  <body style="text-align:center;">
+        \\      <h1 style="color:dodgerblue">Hello, world!</h1>
+        \\      <h3 style="color:firebrick">This website has had {d} requests and {d} unique visitors.</h3>
+        \\  </body>
+        \\</html>
+    , .{ view_count, unique_ip_count });
+
+    const responseHeaders = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{responseBody.len});
 
     var response_buffer = try allocator.alloc(u8, responseHeaders.len + responseBody.len);
     defer allocator.free(response_buffer);
@@ -161,7 +221,7 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     const response = @as(*anyopaque, response_buffer.ptr);
     const response_len: c_int = @intCast(response_buffer.len);
 
-    const bytes_written = switch (server_mode) {
+    const bytes_written = switch (server_config.mode) {
         ServerModes.release => c.SSL_write(ssl, response, response_len),
         else => c.BIO_write(client, response, response_len),
     };
@@ -173,13 +233,15 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     }
 
     var buffer: [512]u8 = undefined;
-    const bytes_read = switch (server_mode) {
+    const bytes_read = switch (server_config.mode) {
         ServerModes.release => c.SSL_read(ssl, &buffer, buffer.len),
         else => c.BIO_read(client, &buffer, buffer.len),
     };
 
     if (bytes_read > 0) {
-        std.debug.print("Received message: {s}\n", .{buffer[0..@as(usize, @intCast(bytes_read))]});
+        const thing = buffer[0..@as(usize, @intCast(bytes_read))];
+        var request = std.mem.tokenizeScalar(u8, thing, ' ');
+        try parseRequest(&request);
     } else if (bytes_read == 0) {
         std.debug.print("Connection closed by client.\n", .{});
     }
@@ -187,19 +249,27 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     if (ssl != null) c.SSL_free(ssl);
 }
 
-pub fn main() !void {
-    const handlerPtr = @as(c.__sighandler_t, @ptrCast(&sigintHandler));
-    _ = c.signal(2, handlerPtr);
-
-    var argIter = try std.process.argsWithAllocator(allocator);
-    _ = argIter.skip();
-    while (argIter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "release")) {
-            server_mode = ServerModes.release;
-            std.debug.print("In release mode!\n", .{});
+fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar)) !void {
+    var count: usize = 0;
+    while (request.next()) |token| {
+        std.log.info("{s}", .{token});
+        count += 1;
+        if (count == 2) {
+            break;
         }
     }
-    argIter.deinit();
+}
+
+fn startServer(_: []const []const u8) !void {
+    const m = server_cli_options.server_mode.value.string.?;
+    if (std.mem.eql(u8, m, "release")) {
+        server_config.mode = ServerModes.release;
+        server_config.port = "443";
+        std.log.info("In release mode! mode: {any}, port: {s}\n", .{ server_config.mode, server_config.port });
+    } else {
+        server_config.mode = ServerModes.debug;
+        server_config.port = server_cli_options.port.value.string.?;
+    }
 
     const ctx = try initializeServer();
     defer c.SSL_CTX_free(ctx);
@@ -222,4 +292,11 @@ pub fn main() !void {
     c.BIO_free(socket);
 
     return socket;
+}
+
+pub fn main() !void {
+    const handlerPtr = @as(c.__sighandler_t, @ptrCast(&sigintHandler));
+    _ = c.signal(2, handlerPtr);
+
+    return cli.run(app, allocator);
 }

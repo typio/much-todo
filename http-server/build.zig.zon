@@ -1,0 +1,10 @@
+.{
+    .name = "much-todo",
+    .version = "0.0.1",
+    .dependencies = .{
+        .@"zig-cli" = .{
+            .url = "https://github.com/typio/zig-cli/archive/refs/heads/main.tar.gz",
+            .hash = "12209d0b011565e97264d37d07e41f7483e632aba0d0c0c74353be99e4dd08c336b7",
+        },
+    },
+}
