@@ -1,5 +1,8 @@
-http-server/zig-cache/
-http-server/zig-out/
+zig-cache/
+zig-out/
 
 server.crt
 server.key
+
+.env
+client_ips.log
