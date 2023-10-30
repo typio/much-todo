@@ -21,26 +21,25 @@ const ServerConfig = struct {
 
 var server_config = ServerConfig{ .mode = ServerModes.debug, .port = "8080" };
 
-const ServerCliOptions = struct {
-    server_mode: cli.Option = .{
-        .long_name = "mode",
-        .short_alias = 'm',
-        .help = "server mode (debug or release)",
-        .value = cli.OptionValue{ .string = "debug" },
-    },
-    port: cli.Option = .{
-        .long_name = "port",
-        .short_alias = 'p',
-        .help = "port to bind to",
-        .value = cli.OptionValue{ .string = "8080" },
-    },
+var cli_option_server_mode = cli.Option{
+    .long_name = "mode",
+    .short_alias = 'm',
+    .help = "server mode (debug or release)",
+    .required = false,
+    .value_ref = cli.mkRef(&server_config.mode),
 };
 
-var server_cli_options = ServerCliOptions{};
+var cli_option_port = cli.Option{
+    .long_name = "port",
+    .short_alias = 'p',
+    .help = "port to bind to",
+    .required = false,
+    .value_ref = cli.mkRef(&server_config.port),
+};
 
 var app = &cli.App{
     .name = "much-todo http server",
-    .options = &.{ &server_cli_options.server_mode, &server_cli_options.port },
+    .options = &.{ &cli_option_server_mode, &cli_option_port },
     .action = startServer,
 };
 
@@ -177,7 +176,8 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     }
 
     const filename = "client_ips.log";
-    const file = try std.fs.cwd().openFile(filename, .{ .mode = std.fs.File.OpenMode.read_only });
+
+    const file = try std.fs.cwd().createFile(filename, .{ .read = true });
     defer file.close();
 
     const contents = try file.reader().readAllAlloc(
@@ -261,14 +261,18 @@ fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar
 }
 
 fn startServer(_: []const []const u8) !void {
-    const m = server_cli_options.server_mode.value.string.?;
-    if (std.mem.eql(u8, m, "release")) {
+    // const m = server_cli_options.server_mode.string.?;
+    // if (server_cli_options.server_mode.value_ref.value_data == ServerModes.release) { // (std.mem.eql(u8, m, "release")) {
+    // if (std.mem.eql(u8, server_cli_options.server_mode.value_ref.dest.*, "release")) {
+    const c_o = &server_config;
+
+    if (c_o.mode == ServerModes.release) {
         server_config.mode = ServerModes.release;
         server_config.port = "443";
         std.log.info("In release mode! mode: {any}, port: {s}\n", .{ server_config.mode, server_config.port });
     } else {
         server_config.mode = ServerModes.debug;
-        server_config.port = server_cli_options.port.value.string.?;
+        server_config.port = c_o.port;
     }
 
     const ctx = try initializeServer();
@@ -295,8 +299,8 @@ fn startServer(_: []const []const u8) !void {
 }
 
 pub fn main() !void {
-    const handlerPtr = @as(c.__sighandler_t, @ptrCast(&sigintHandler));
-    _ = c.signal(2, handlerPtr);
+    // const handlerPtr = @as(c.__sighandler_t, @ptrCast(&sigintHandler));
+    // _ = c.signal(2, handlerPtr);
 
     return cli.run(app, allocator);
 }
