@@ -1,6 +1,7 @@
 .{
     .name = "much-todo",
     .version = "0.0.1",
+    .paths = .{""},
     .dependencies = .{
         .@"zig-cli" = .{
             .url = "https://github.com/typio/zig-cli/archive/refs/heads/main.tar.gz",
