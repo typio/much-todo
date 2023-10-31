@@ -49,7 +49,7 @@ const allocator = gpa.allocator();
 var running: bool = true;
 
 // Signal handler for SIGINT (Ctrl+C)
-pub fn sigintHandler(signum: c_int) void {
+pub fn sigintHandler(signum: c_int) callconv(.C) void {
     _ = signum;
     running = false;
     std.debug.print("\nReceived SIGINT. Terminating...\n", .{});
@@ -148,7 +148,7 @@ fn logIp(client: *c.BIO) !void {
     std.debug.print("IP: {s} connected.\n", .{ip_string});
 
     const filename = "client_ips.log";
-    const file = std.fs.cwd().openFile(filename, .{ .mode = std.fs.File.OpenMode.write_only }) catch try std.fs.cwd().createFile(filename, .{});
+    const file = try std.fs.cwd().createFile(filename, .{ .read = false, .truncate = false });
     defer file.close();
     var stat = try file.stat();
     try file.seekTo(stat.size);
@@ -160,7 +160,9 @@ fn logIp(client: *c.BIO) !void {
 fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     var ssl: ?*c.SSL = null;
 
-    logIp(client) catch std.log.err("Failed to log IP\n", .{});
+    if (server_config.mode == .release) {
+        logIp(client) catch std.log.err("Failed to log IP\n", .{});
+    }
 
     if (server_config.mode == ServerModes.release) {
         ssl = c.SSL_new(ctx);
@@ -175,63 +177,6 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
         }
     }
 
-    const filename = "client_ips.log";
-
-    const file = try std.fs.cwd().createFile(filename, .{ .read = true });
-    defer file.close();
-
-    const contents = try file.reader().readAllAlloc(
-        allocator,
-        1024 * 1024 * 10,
-    );
-    var ip_strings = std.mem.tokenizeScalar(u8, contents, '\n');
-    var unique_ip_count: usize = 0;
-    var view_count: usize = 0;
-    var unique_ip_set = std.BufSet.init(allocator);
-    while (ip_strings.next()) |ip_string| {
-        if (ip_string.len == 0) continue;
-        view_count += 1;
-
-        var ip_log_parts = std.mem.tokenizeScalar(u8, ip_string, ' ');
-        var ip = ip_log_parts.next().?;
-
-        if (!unique_ip_set.contains(ip)) {
-            unique_ip_count += 1;
-            try unique_ip_set.insert(ip);
-        }
-    }
-
-    const responseBody = try std.fmt.allocPrint(allocator,
-        \\<html>
-        \\  <link rel="icon" href="data:image/x-icon;,">
-        \\  <body style="text-align:center;">
-        \\      <h1 style="color:dodgerblue">Hello, world!</h1>
-        \\      <h3 style="color:firebrick">This website has had {d} requests and {d} unique visitors.</h3>
-        \\  </body>
-        \\</html>
-    , .{ view_count, unique_ip_count });
-
-    const responseHeaders = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{responseBody.len});
-
-    var response_buffer = try allocator.alloc(u8, responseHeaders.len + responseBody.len);
-    defer allocator.free(response_buffer);
-    std.mem.copy(u8, response_buffer, responseHeaders);
-    std.mem.copy(u8, response_buffer[responseHeaders.len..], responseBody);
-
-    const response = @as(*anyopaque, response_buffer.ptr);
-    const response_len: c_int = @intCast(response_buffer.len);
-
-    const bytes_written = switch (server_config.mode) {
-        ServerModes.release => c.SSL_write(ssl, response, response_len),
-        else => c.BIO_write(client, response, response_len),
-    };
-
-    std.log.info("Wrote {d} bytes\n", .{bytes_written});
-
-    if (bytes_written <= 0) {
-        std.log.err("Failed to write.\n", .{});
-    }
-
     var buffer: [512]u8 = undefined;
     const bytes_read = switch (server_config.mode) {
         ServerModes.release => c.SSL_read(ssl, &buffer, buffer.len),
@@ -241,7 +186,7 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     if (bytes_read > 0) {
         const thing = buffer[0..@as(usize, @intCast(bytes_read))];
         var request = std.mem.tokenizeScalar(u8, thing, ' ');
-        try parseRequest(&request);
+        try parseRequest(&request, client, ssl);
     } else if (bytes_read == 0) {
         std.debug.print("Connection closed by client.\n", .{});
     }
@@ -249,21 +194,114 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     if (ssl != null) c.SSL_free(ssl);
 }
 
-fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar)) !void {
-    var count: usize = 0;
-    while (request.next()) |token| {
-        std.log.info("{s}", .{token});
-        count += 1;
-        if (count == 2) {
-            break;
+fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar), client: *c.BIO, ssl: ?*c.SSL) !void {
+    const HTTPMethod = enum {
+        HEAD,
+        GET,
+        PUT,
+        POST,
+        DELETE,
+    };
+
+    if (request.next()) |method| {
+        const request_method = std.meta.stringToEnum(HTTPMethod, method) orelse return;
+
+        if (request_method == .GET or request_method == .HEAD) {
+            var response_buffers = ResponseBuffers{ .header = undefined, .body = undefined };
+            if (request.next()) |path| {
+                if (std.mem.eql(u8, path, "/")) {
+                    const filename = "build/frontend/index.html";
+                    const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
+
+                    defer file.close();
+
+                    response_buffers.body = try file.reader().readAllAlloc(
+                        allocator,
+                        16 * 1024,
+                    );
+
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                } else if (std.mem.eql(u8, path, "/favicon.ico")) {
+                    const filename = "build/frontend/favicon.ico";
+                    const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
+
+                    defer file.close();
+
+                    response_buffers.body = try file.reader().readAllAlloc(
+                        allocator,
+                        16 * 1024,
+                    );
+
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                } else if (std.mem.eql(u8, path, "/api/viewCount")) {
+                    const filename = "client_ips.log";
+                    const file = try std.fs.cwd().createFile(filename, .{ .read = true, .truncate = false });
+                    defer file.close();
+
+                    const contents = try file.reader().readAllAlloc(
+                        allocator,
+                        1024 * 1024 * 10,
+                    );
+
+                    var ip_strings = std.mem.tokenizeScalar(u8, contents, '\n');
+                    var unique_ip_count: usize = 0;
+                    var view_count: usize = 0;
+                    var unique_ip_set = std.BufSet.init(allocator);
+
+                    while (ip_strings.next()) |ip_string| {
+                        if (ip_string.len == 0) continue;
+                        view_count += 1;
+
+                        var ip_log_parts = std.mem.tokenizeScalar(u8, ip_string, ' ');
+                        var ip = ip_log_parts.next().?;
+
+                        if (!unique_ip_set.contains(ip)) {
+                            unique_ip_count += 1;
+                            try unique_ip_set.insert(ip);
+                        }
+                    }
+                    response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"view_count\": {d}, \"unique_ip_count\": {d}}}", .{ view_count, unique_ip_count });
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                } else {
+                    std.log.info("404 not found: {s}", .{path});
+                }
+            }
+
+            if (request_method == .HEAD) {
+                var buffer = try allocator.alloc(u8, response_buffers.header.len);
+                std.mem.copy(u8, buffer, response_buffers.header);
+                try serveBytes(client, ssl, buffer);
+            } else {
+                var buffer = try allocator.alloc(u8, response_buffers.header.len + response_buffers.body.len);
+                std.mem.copy(u8, buffer, response_buffers.header);
+                std.mem.copy(u8, buffer[response_buffers.header.len..], response_buffers.body);
+                try serveBytes(client, ssl, buffer);
+            }
+        } else {
+            std.log.info("Unsupported request method: {s}", .{method});
         }
     }
 }
 
+const ResponseBuffers = struct {
+    header: []const u8,
+    body: []const u8,
+};
+
+fn serveBytes(client: *c.BIO, ssl: ?*c.SSL, bytes: []const u8) !void {
+    const bytes_written = switch (server_config.mode) {
+        ServerModes.release => c.SSL_write(ssl, @as(*const anyopaque, bytes.ptr), @intCast(bytes.len)),
+        else => c.BIO_write(client, @as(*const anyopaque, bytes.ptr), @intCast(bytes.len)),
+    };
+
+    if (bytes_written <= 0) {
+        std.log.err("Failed to write.", .{});
+    } else {
+        std.log.info("Wrote {d} bytes", .{bytes_written});
+    }
+}
+
 fn startServer(_: []const []const u8) !void {
-    // const m = server_cli_options.server_mode.string.?;
-    // if (server_cli_options.server_mode.value_ref.value_data == ServerModes.release) { // (std.mem.eql(u8, m, "release")) {
-    // if (std.mem.eql(u8, server_cli_options.server_mode.value_ref.dest.*, "release")) {
     const c_o = &server_config;
 
     if (c_o.mode == ServerModes.release) {
@@ -284,7 +322,7 @@ fn startServer(_: []const []const u8) !void {
 
     while (true) {
         if (c.BIO_do_accept(socket) <= 0) {
-            std.debug.print("Failed to accept.\n", .{});
+            std.debug.print("Failed to accept.", .{});
             std.time.sleep(std.time.ns_per_ms * 100);
             continue;
         }
@@ -299,8 +337,8 @@ fn startServer(_: []const []const u8) !void {
 }
 
 pub fn main() !void {
-    // const handlerPtr = @as(c.__sighandler_t, @ptrCast(&sigintHandler));
-    // _ = c.signal(2, handlerPtr);
+    const handlerPtr = @as(fn (c_int) callconv(.C) void, sigintHandler);
+    _ = c.signal(2, handlerPtr);
 
     return cli.run(app, allocator);
 }

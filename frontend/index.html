@@ -1,11 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="favicon.ico">
     <title>Much Todo</title>
 </head>
-<body>
+
+<body style="text-align:center; background-color: #fed;">
     <h1>Much Todo About Nothing</h1>
+    <h2 style="font-size: 1.2rem; color: #449">This website has had <span id="page-views"></span> requests and <span id="unique-visitors"></span> unique
+        visitors.</h2>
 </body>
+
+<script>
+    window.onload = () => {
+        fetch("/api/viewCount")
+            .then(response => response.json())
+            .then(data => {
+                console.log(data)
+                const pageViewCountElement = document.getElementById('page-views');
+                const uniqueVisitorCountElement = document.getElementById('unique-visitors');
+                pageViewCountElement.innerText = data.view_count ?? '';
+                uniqueVisitorCountElement.innerText = data.unique_ip_count ?? '';
+            })
+            .catch(error => {
+                console.error("Error fetching view data:", error);
+            });
+    }
+</script>
+
 </html>
