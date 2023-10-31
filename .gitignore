@@ -6,3 +6,7 @@ server.key
 
 .env
 client_ips.log
+
+deps/
+
+build/

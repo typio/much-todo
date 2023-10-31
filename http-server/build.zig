@@ -11,6 +11,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    if (target.os_tag == std.Target.Os.Tag.linux) {
+        // linux x86_64 openssl
+        exe.addIncludePath(.{ .path = "deps/linux_deps/include" });
+        exe.addLibraryPath(.{ .path = "deps/linux_deps/lib/openssl" });
+    } else { // annoyingly target.os_tag is null for native so I can't check macos specifically
+        // macos aarch64 openssl
+        exe.addIncludePath(.{ .path = "/opt/homebrew/Cellar/openssl@3/3.1.4/include" });
+        exe.addLibraryPath(.{ .path = "/opt/homebrew/Cellar/openssl@3/3.1.4/lib" });
+    }
+
     exe.linkSystemLibrary("c");
     exe.linkSystemLibrary("ssl");
     exe.linkSystemLibrary("crypto");
