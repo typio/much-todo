@@ -159,6 +159,7 @@ fn logIp(client: *c.BIO) !void {
 
 fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     var ssl: ?*c.SSL = null;
+    defer if (ssl) |ssl_obj| c.SSL_free(ssl_obj);
 
     if (server_config.mode == .release) {
         logIp(client) catch std.log.err("Failed to log IP\n", .{});
@@ -190,8 +191,6 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     } else if (bytes_read == 0) {
         std.debug.print("Connection closed by client.\n", .{});
     }
-
-    if (ssl != null) c.SSL_free(ssl);
 }
 
 fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar), client: *c.BIO, ssl: ?*c.SSL) !void {
@@ -207,7 +206,10 @@ fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar
         const request_method = std.meta.stringToEnum(HTTPMethod, method) orelse return;
 
         if (request_method == .GET or request_method == .HEAD) {
-            var response_buffers = ResponseBuffers{ .header = undefined, .body = undefined };
+            var response_buffers = ResponseBuffers{ .header = null, .body = null };
+            defer if (response_buffers.header) |header| allocator.free(header);
+            defer if (response_buffers.body) |body| allocator.free(body);
+
             if (request.next()) |path| {
                 if (std.mem.eql(u8, path, "/")) {
                     const filename = "build/frontend/index.html";
@@ -220,7 +222,7 @@ fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar
                         16 * 1024,
                     );
 
-                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
                 } else if (std.mem.eql(u8, path, "/favicon.ico")) {
                     const filename = "build/frontend/favicon.ico";
                     const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
@@ -232,7 +234,7 @@ fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar
                         16 * 1024,
                     );
 
-                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
                 } else if (std.mem.eql(u8, path, "/api/viewCount")) {
                     const filename = "client_ips.log";
                     const file = try std.fs.cwd().createFile(filename, .{ .read = true, .truncate = false });
@@ -261,31 +263,36 @@ fn parseRequest(request: *std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar
                         }
                     }
                     response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"view_count\": {d}, \"unique_ip_count\": {d}}}", .{ view_count, unique_ip_count });
-                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.len});
+                    response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
                 } else {
                     std.log.info("404 not found: {s}", .{path});
                 }
             }
 
-            if (request_method == .HEAD) {
-                var buffer = try allocator.alloc(u8, response_buffers.header.len);
-                std.mem.copy(u8, buffer, response_buffers.header);
-                try serveBytes(client, ssl, buffer);
-            } else {
-                var buffer = try allocator.alloc(u8, response_buffers.header.len + response_buffers.body.len);
-                std.mem.copy(u8, buffer, response_buffers.header);
-                std.mem.copy(u8, buffer[response_buffers.header.len..], response_buffers.body);
-                try serveBytes(client, ssl, buffer);
+            // Serve the reponse requested
+            if (response_buffers.body != null and response_buffers.header != null) {
+                if (request_method == .HEAD) {
+                    var buffer = try allocator.alloc(u8, response_buffers.header.?.len);
+                    std.mem.copy(u8, buffer, response_buffers.header.?);
+                    try serveBytes(client, ssl, buffer);
+                } else {
+                    var buffer = try allocator.alloc(u8, response_buffers.header.?.len + response_buffers.body.?.len);
+                    std.mem.copy(u8, buffer, response_buffers.header.?);
+                    std.mem.copy(u8, buffer[response_buffers.header.?.len..], response_buffers.body.?);
+                    try serveBytes(client, ssl, buffer);
+                }
             }
         } else {
-            std.log.info("Unsupported request method: {s}", .{method});
+            if (request.next()) |path| {
+                std.log.info("Unsupported request method: {s}, on path: {s}", .{ method, path });
+            } else std.log.info("Unsupported request method: {s}", .{method});
         }
     }
 }
 
 const ResponseBuffers = struct {
-    header: []const u8,
-    body: []const u8,
+    header: ?[]const u8,
+    body: ?[]const u8,
 };
 
 fn serveBytes(client: *c.BIO, ssl: ?*c.SSL, bytes: []const u8) !void {
@@ -323,12 +330,17 @@ fn startServer(_: []const []const u8) !void {
     while (true) {
         if (c.BIO_do_accept(socket) <= 0) {
             std.debug.print("Failed to accept.", .{});
-            std.time.sleep(std.time.ns_per_ms * 100);
             continue;
         }
 
-        const client = c.BIO_pop(socket) orelse return error.FailedToAccept;
-        try handleClientConnection(client, ctx);
+        const client = c.BIO_pop(socket);
+        if (client == null) {
+            std.debug.print("Failed to pop client socket.\n", .{});
+        } else {
+            handleClientConnection(client.?, ctx) catch |err| {
+                std.debug.print("Error handling client connection: {}\n", .{err});
+            };
+        }
     }
 
     c.BIO_free(socket);
