@@ -8,10 +8,16 @@
     <title>Much Todo</title>
 </head>
 
-<body style="text-align:center; background-color: #fed;">
-    <h1>Much Todo About Nothing</h1>
-    <h2 style="font-size: 1.2rem; color: #449">This website has had <span id="page-views"></span> requests and <span id="unique-visitors"></span> unique
-        visitors.</h2>
+<body>
+    <h1 class="title">Much Todo About Nothing</h1>
+    <h2 class="subtitle">A todo app for the 24<sup>th</sup> century.</h2>
+
+    <footer>
+        <h2 class="subtitle">This website has received <span id="page-views"></span> requests and <span
+                id="unique-visitors"></span> unique
+            visitors.</h2>
+        <h2 class="subtitle">Source on <a style="color: unset;" href="https://github.com/typio/much-todo">GitHub</a>.</h2>
+    </footer>
 </body>
 
 <script>
@@ -30,5 +36,45 @@
             });
     }
 </script>
+
+<style>
+    html {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+    }
+
+    body {
+        text-align: center;
+        background-color: rgb(255, 235, 225);
+        color: rgb(50, 50, 50);
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+    }
+
+    .title {
+        font-size: 2.4rem;
+        font-weight: 600;
+        font-family: 'Times New Roman', Times, serif;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        font-size: 1rem;
+        font-weight: 500;
+        font-family: Arial, Helvetica, sans-serif
+    }
+
+    footer {
+        margin-top: auto;
+    }
+
+    #page-views,
+    #unique-visitors {
+        color: red;
+        font-weight: 600;
+    }
+</style>
 
 </html>
