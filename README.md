@@ -12,7 +12,3 @@ Live at [muchtodo.app](https://muchtodo.app). <sup>(*unless it crashed*)</sup>
 - Frontend 👉 HTML/TypeScript
 - Backend App 👉 OCaml/JSON
 - Backend Web Server 👉 Zig
-
-## Building
-
-The web server build process is very ad hoc to my specific setup of building for an x86_64 linux server on aarch64 macos. The only difficulty in building is acquiring openssl for the target platform and linking to it in `build.zig`.
