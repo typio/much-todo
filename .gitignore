@@ -6,7 +6,9 @@ server.key
 
 .env
 client_ips.log
+db.json
 
 deps/
 
 build/
+bin/
