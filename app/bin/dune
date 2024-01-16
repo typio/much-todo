@@ -1,0 +1,6 @@
+(executable
+ (public_name app)
+ (name main)
+ (libraries dream)
+ (preprocess
+  (pps lwt_ppx ppx_yojson_conv)))
