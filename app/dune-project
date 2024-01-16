@@ -1,0 +1,17 @@
+(lang dune 3.8)
+
+(name app)
+
+(generate_opam_files true)
+
+(source
+ (github typio/much-todo))
+
+(authors "Thomas Huber")
+
+(package
+ (name app)
+ (synopsis "Backend of much todo web app")
+ (depends ocaml dune)
+ (tags
+  ("much todo" "web server" "web app")))

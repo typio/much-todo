@@ -2,79 +2,179 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="favicon.ico">
-    <title>Much Todo</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="favicon.ico">
+  <title>Much Todo</title>
 </head>
 
 <body>
-    <h1 class="title">Much Todo About Nothing</h1>
-    <h2 class="subtitle">A todo app for the 24<sup>th</sup> century.</h2>
+  <h1 class="title">Much Todo About Nothing</h1>
+  <h2 class="subtitle">A note-taking app for the 24<sup>th</sup> century.</h2>
 
-    <footer>
-        <h2 class="subtitle">This website has received <span id="page-views"></span> requests and <span
-                id="unique-visitors"></span> unique
-            visitors.</h2>
-        <h2 class="subtitle">Source on <a style="color: unset;" href="https://github.com/typio/much-todo">GitHub</a>.</h2>
-    </footer>
+  <div class="content">
+    <div class="form">
+      <input type="text" id="message-input" placeholder="Write message...">
+      <button id="send-message">Send</button>
+    </div>
+
+    <div class="messages" id="messages">
+      <!-- <p class="message">hello</p> -->
+    </div>
+  </div>
+
+  <footer>
+    <h2 class="subtitle">Disclaimer: All content is public.</h2>
+    <h2 class="subtitle">This website has received <span id="page-views"></span> requests and <span
+        id="unique-visitors"></span> unique
+      visitors.</h2>
+    <h2 class="subtitle">Source on <a style="color: unset;" href="https://github.com/typio/much-todo">GitHub</a>.</h2>
+  </footer>
 </body>
 
 <script>
-    window.onload = () => {
-        fetch("/api/viewCount")
-            .then(response => response.json())
-            .then(data => {
-                console.log(data)
-                const pageViewCountElement = document.getElementById('page-views');
-                const uniqueVisitorCountElement = document.getElementById('unique-visitors');
-                pageViewCountElement.innerText = data.view_count ?? '';
-                uniqueVisitorCountElement.innerText = data.unique_ip_count ?? '';
-            })
-            .catch(error => {
-                console.error("Error fetching view data:", error);
-            });
-    }
+  const addMessage = (messagesElement, messageId, messageBody, toStart = false) => {
+    const newMessage = document.createElement('p')
+    newMessage.classList.add('message')
+    newMessage.innerText = messageBody
+    if (toStart) messagesElement?.prepend(newMessage)
+    else messagesElement?.append(newMessage)
+
+    newMessage.addEventListener('click', (e) => {
+      console.log(messageBody, messageId)
+
+      fetch("/api/messages", {
+        method: "DELETE",
+        body: JSON.stringify({ messageId: messageId }),
+        headers: { "Content-type": "application/json;" }
+      }).then(() => get_messages());
+    })
+  }
+
+  const get_messages = () => {
+    fetch('/api/messages')
+      .then(response => response.json())
+      .then(data => {
+        const messagesElement = document.getElementById('messages');
+        messagesElement.innerHTML = ''
+
+        data.messages.forEach(message => {
+          addMessage(messagesElement, message.id, message.body)
+        })
+      })
+      .catch(error => {
+        console.error('Error fetching messages:', error);
+      });
+  }
+
+  window.onload = () => {
+    const sendMessage = () => {
+      const messageBody = document.getElementById('message-input').value;
+      if (messageBody.trim() === '') return;
+
+      fetch("/api/messages", {
+        method: "POST",
+        body: JSON.stringify({ message: messageBody }),
+        headers: { "Content-type": "application/json;" }
+      }).then((e) => {
+        // const messagesElement = document.getElementById('messages');
+        // addMessage(messagesElement, messageBody, true);
+
+        // Simple get is ok, so I don't have to reimplement app logic here
+        get_messages()
+      });
+    };
+
+    document.getElementById('send-message').addEventListener('click', sendMessage);
+
+    document.getElementById('message-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    get_messages()
+
+    fetch("/api/viewCount")
+      .then(response => response.json())
+      .then(data => {
+        const pageViewCountElement = document.getElementById('page-views');
+        const uniqueVisitorCountElement = document.getElementById('unique-visitors');
+        pageViewCountElement.innerText = data.view_count ?? '';
+        uniqueVisitorCountElement.innerText = data.unique_ip_count ?? '';
+      })
+      .catch(error => {
+        console.error("Error fetching view data:", error);
+      });
+  }
 </script>
 
 <style>
-    html {
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-    }
+  html {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
 
-    body {
-        text-align: center;
-        background-color: rgb(255, 235, 225);
-        color: rgb(50, 50, 50);
-        display: flex;
-        flex-direction: column;
-        flex: 1;
-    }
+  body {
+    text-align: center;
+    background-color: rgb(255, 235, 225);
+    color: rgb(50, 50, 50);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
 
-    .title {
-        font-size: 2.4rem;
-        font-weight: 600;
-        font-family: 'Times New Roman', Times, serif;
-        margin-bottom: 0;
-    }
+  .title {
+    font-size: 2.4rem;
+    font-weight: 600;
+    font-family: 'Times New Roman', Times, serif;
+    margin-bottom: 0;
+  }
 
-    .subtitle {
-        font-size: 1rem;
-        font-weight: 500;
-        font-family: Arial, Helvetica, sans-serif
-    }
+  .subtitle {
+    font-size: 1rem;
+    font-weight: 500;
+    font-family: Arial, Helvetica, sans-serif
+  }
 
-    footer {
-        margin-top: auto;
-    }
+  .content {
+    margin: 32px auto 0 auto;
+    display: flex;
+    max-height: 50vh;
+    flex-direction: column;
+    border-top: 1px solid black;
+    border-bottom: 1px solid black;
+    width: 95vw;
+    max-width: 512px;
+  }
 
-    #page-views,
-    #unique-visitors {
-        color: red;
-        font-weight: 600;
-    }
+  .form {
+    flex-direction: row;
+    margin-top: 12px;
+  }
+
+  .messages {
+    flex-direction: row;
+    overflow-y: scroll;
+    margin-top: 12px;
+  }
+
+  .message {
+    margin: 2px 0;
+  }
+
+  .message:hover {
+    text-decoration: line-through;
+  }
+
+  footer {
+    margin-top: auto;
+  }
+
+  #page-views,
+  #unique-visitors {
+    color: red;
+    font-weight: 600;
+  }
 </style>
 
 </html>
