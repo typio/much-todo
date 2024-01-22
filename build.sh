@@ -37,9 +37,9 @@ cd ..
 # cd ..
 
 # 3. Building frontend files
-echo "Building frontend..."
-mkdir -p build/frontend
-cp -Rf frontend/* build/frontend/
-rm build/frontend/README.md
+# echo "Building frontend..."
+# mkdir -p build/frontend
+# cp -Rf frontend/* build/frontend/
+# rm build/frontend/README.md
 
 echo "Build completed!"

@@ -1,0 +1,12 @@
+@font-face {
+  font-family: "Inter";
+  src: url('assets/fonts/InterVariable.ttf') format("truetype-variations");
+}
+
+* {
+  font-family: 'Inter';
+}
+
+a {
+  color: unset;
+}

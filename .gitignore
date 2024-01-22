@@ -11,3 +11,6 @@ db.json
 deps/
 
 build/
+_build
+
+fonts/
