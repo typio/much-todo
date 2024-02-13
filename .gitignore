@@ -11,6 +11,6 @@ db.json
 deps/
 
 build/
-_build
+_build/
 
 fonts/
