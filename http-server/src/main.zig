@@ -54,9 +54,11 @@ const HTTPMethod = enum {
     DELETE,
 };
 
-const HTTPRequest = struct { path: []const u8, method: HTTPMethod, header: []const u8, body: []const u8, source_ip: []const u8 };
+const HTTPHead = struct { path: []const u8, method: HTTPMethod, content_length: u16 };
 
-const USER_REQUEST_BUFFER_SIZE = 8 * 1024;
+const HTTPRequest = struct { head: HTTPHead, body: []const u8, source_ip: []const u8 };
+
+const USER_REQUEST_BUFFER_SIZE = 32 * 1024;
 const API_RESPONSE_BUFFER_SIZE = 256 * 1024;
 const FILE_SERVE_BUFFER_SIZE = 2000 * 1024;
 
@@ -260,29 +262,7 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
             return;
         }
     }
-
-    var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = undefined;
-    const bytes_read = switch (server_config.mode) {
-        ServerModes.release => c.SSL_read(ssl, &buffer, buffer.len),
-        else => c.BIO_read(client, &buffer, buffer.len),
-    };
-
-    if (bytes_read > 0) {
-        const thing = buffer[0..@as(usize, @intCast(bytes_read))];
-
-        // TODO: Find an idiomatic way to do this (difficulty is that delimiters are different)
-        const firstSpace = std.mem.indexOf(u8, thing, " ") orelse 0;
-        const secondSpace = firstSpace + 1 + (std.mem.indexOf(u8, thing[firstSpace + 1 ..], " ") orelse firstSpace);
-        const bodyStart = secondSpace + 4 + (std.mem.indexOf(u8, thing[secondSpace + 1 ..], "\r\n\r\n") orelse secondSpace);
-
-        // TODO: Actually parse headers (replace string with HashMap or struct)
-        const request_method = std.meta.stringToEnum(HTTPMethod, thing[0..firstSpace]) orelse return;
-        const httpRequest = HTTPRequest{ .method = request_method, .path = thing[(firstSpace + 1)..secondSpace], .header = thing[(secondSpace + 1)..bodyStart], .body = thing[(bodyStart + 1)..], .source_ip = source_ip };
-
-        try parseRequest(&httpRequest, client, ssl);
-    } else if (bytes_read == 0) {
-        std.debug.print("Connection closed by client.\n", .{});
-    }
+    try handleClientRequest(client, ssl, source_ip);
 
     if (ssl) |ssl_obj| {
         if (c.SSL_shutdown(ssl_obj) == 0) {
@@ -292,14 +272,86 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
     }
 }
 
+fn parseHead(head: []const u8) !HTTPHead {
+    var head_lines = std.mem.splitScalar(u8, head, '\n');
+
+    const first_line = head_lines.first();
+
+    var start_line_parts = std.mem.splitScalar(u8, first_line, ' ');
+
+    const method = std.meta.stringToEnum(HTTPMethod, start_line_parts.next() orelse "").?;
+    const path = start_line_parts.next() orelse "";
+
+    var content_length: u16 = 0;
+    while (head_lines.next()) |line| {
+        var header: []const u8 = "";
+        var value: []const u8 = "";
+        for (line, 0..) |line_c, i| {
+            if (line_c == ':') {
+                header = line[0..i];
+                value = line[i + 2 .. line.len - 1];
+                if (std.mem.eql(u8, header, "Content-Length")) {
+                    content_length = try std.fmt.parseInt(u16, value, 10);
+                }
+                break;
+            }
+        }
+    }
+
+    return HTTPHead{ .method = method, .path = path, .content_length = content_length };
+}
+
+fn handleClientRequest(client: *c.BIO, ssl: ?*c.SSL, source_ip: []const u8) !void {
+    var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = undefined;
+    const bytes_read = switch (server_config.mode) {
+        ServerModes.release => c.SSL_read(ssl, &buffer, buffer.len),
+        else => c.BIO_read(client, &buffer, buffer.len),
+    };
+
+    if (bytes_read <= 0) {
+        std.debug.print("Connection closed by client or error occurred.\n", .{});
+        return;
+    }
+
+    const first_read = buffer[0..@as(usize, @intCast(bytes_read))];
+
+    var request_parts = std.mem.splitSequence(u8, first_read, "\r\n\r\n");
+
+    const request_head = try parseHead(request_parts.next() orelse "");
+    var request_body = request_parts.next() orelse "";
+
+    var body_reads: u8 = 0;
+    while (request_head.content_length > 0 and request_head.content_length > request_body.len) {
+        var read_buffer: [USER_REQUEST_BUFFER_SIZE]u8 = undefined;
+
+        const bodyBytesRead = switch (server_config.mode) {
+            ServerModes.release => c.SSL_read(ssl, &read_buffer, read_buffer.len),
+            else => c.BIO_read(client, &read_buffer, read_buffer.len),
+        };
+        const next_body_read = read_buffer[0..@as(usize, @intCast(bodyBytesRead))];
+
+        request_body = try std.mem.concat(allocator, u8, &[_][]const u8{ request_body, next_body_read });
+        body_reads += 1;
+
+        if (body_reads > 10) {
+            std.log.warn("Read body 10 times! Sending request as is.", .{});
+            break;
+        }
+    }
+
+    const httpRequest = HTTPRequest{ .head = request_head, .body = request_body, .source_ip = source_ip };
+
+    try parseRequest(&httpRequest, client, ssl);
+}
+
 fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void {
     var response_buffers = ResponseBuffers{ .header = null, .body = null };
     defer if (response_buffers.header) |header| allocator.free(header);
     defer if (response_buffers.body) |body| allocator.free(body);
 
-    if (request.method == .GET or request.method == .HEAD) {
-        if (routeToFileMap.contains(request.path)) {
-            const file_descriptor = routeToFileMap.get(request.path) orelse return;
+    if (request.head.method == .GET or request.head.method == .HEAD) {
+        if (routeToFileMap.contains(request.head.path)) {
+            const file_descriptor = routeToFileMap.get(request.head.path) orelse return;
             const filename = file_descriptor.server_path;
             const mime_type = file_descriptor.mime_type;
 
@@ -311,7 +363,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             );
 
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{ mime_type, response_buffers.body.?.len });
-        } else if (std.mem.eql(u8, request.path, "/api/notes")) {
+        } else if (std.mem.eql(u8, request.head.path, "/api/notes")) {
             const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
             defer stream.close();
 
@@ -339,7 +391,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
             // }
-        } else if (std.mem.eql(u8, request.path, "/api/viewCount")) {
+        } else if (std.mem.eql(u8, request.head.path, "/api/viewCount")) {
             const contents = try std.fs.cwd().readFileAlloc(allocator, "client_ips.log", 100 * FILE_SERVE_BUFFER_SIZE);
             defer allocator.free(contents);
             var ip_strings = std.mem.tokenizeScalar(u8, contents, '\n');
@@ -362,7 +414,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"view_count\": {d}, \"unique_ip_count\": {d}}}", .{ view_count, unique_ip_count });
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
         } else {
-            std.log.info("404 not found: {s}", .{request.path});
+            std.log.info("404 not found: {s}", .{request.head.path});
 
             const filename = "build/frontend/_404.html";
             const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
@@ -376,8 +428,8 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
 
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
         }
-    } else if (request.method == .POST) {
-        if (std.mem.eql(u8, request.path, "/api/notes")) {
+    } else if (request.head.method == .POST) {
+        if (std.mem.eql(u8, request.head.path, "/api/notes")) {
             const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
             defer stream.close();
 
@@ -411,7 +463,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
             // }
-        } else if (std.mem.eql(u8, request.path, "/api/notes/vote")) {
+        } else if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
             const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
             defer stream.close();
 
@@ -447,7 +499,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
         }
-    } else if (request.method == .DELETE) {
+    } else if (request.head.method == .DELETE) {
         const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
         defer stream.close();
 
@@ -480,21 +532,24 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
         response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
         // }
     } else {
-        std.log.info("Unsupported request method: {?}, on path: {s}", .{ request.method, request.path });
+        std.log.info("Unsupported request method: {?}, on path: {s}", .{ request.head.method, request.head.path });
+    }
+
+    if (response_buffers.body == null or response_buffers.header == null) {
+        response_buffers.body = "{{\"code\": 404, \"message\": \"Not Found\"}}";
+        response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {any}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
     }
 
     // Serve the reponse
-    if (response_buffers.body != null and response_buffers.header != null) {
-        if (request.method == .HEAD) {
-            const buffer = try allocator.alloc(u8, response_buffers.header.?.len);
-            std.mem.copyForwards(u8, buffer, response_buffers.header.?);
-            try serveBytes(client, ssl, buffer);
-        } else {
-            var buffer = try allocator.alloc(u8, response_buffers.header.?.len + response_buffers.body.?.len);
-            std.mem.copyForwards(u8, buffer, response_buffers.header.?);
-            std.mem.copyForwards(u8, buffer[response_buffers.header.?.len..], response_buffers.body.?);
-            try serveBytes(client, ssl, buffer);
-        }
+    if (request.head.method == .HEAD) {
+        const buffer = try allocator.alloc(u8, response_buffers.header.?.len);
+        std.mem.copyForwards(u8, buffer, response_buffers.header.?);
+        try serveBytes(client, ssl, buffer);
+    } else {
+        var buffer = try allocator.alloc(u8, response_buffers.header.?.len + response_buffers.body.?.len);
+        std.mem.copyForwards(u8, buffer, response_buffers.header.?);
+        std.mem.copyForwards(u8, buffer[response_buffers.header.?.len..], response_buffers.body.?);
+        try serveBytes(client, ssl, buffer);
     }
 }
 
