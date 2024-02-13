@@ -99,14 +99,43 @@ let get_notes source_ip (notes: note list) : json_get_note_response list =
   in
   aux [] notes
   
-  
-let process_notes source_ip =
-  let notes = read_notes () in
-  get_notes source_ip notes
-  
 let mutex = Mutex.create ()
+let cached_notes : note list ref = ref []
 
+let process_notes source_ip =
+  get_notes source_ip !cached_notes
+
+let initialize_cache () =
+  cached_notes := read_notes ()
+
+let save_cache_to_disk () =
+  Mutex.lock mutex;
+  print_endline "Saving data cache to JSON DB";
+
+  `Assoc [("notes", `List (List.map yojson_of_note !cached_notes))]
+  |> Yojson.Safe.to_file "db.json";
+
+  Mutex.unlock mutex
+
+let handle_exit_signal signal =
+  print_endline ("Caught signal: " ^ string_of_int signal);
+  save_cache_to_disk ();
+  exit 0
+    
+  
+let rec periodic_cache_save interval_seconds =
+  Lwt.bind (Lwt_unix.sleep interval_seconds)
+    (fun () ->
+      save_cache_to_disk ();
+      periodic_cache_save interval_seconds)
+  
 let () =
+  initialize_cache ();
+
+  Sys.set_signal Sys.sigint (Sys.Signal_handle handle_exit_signal);
+  Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_exit_signal);
+  let _ = periodic_cache_save 300.0 in  
+
   Dream.run ~interface:"127.0.0.1" ~port:7050
   @@ Dream.logger
   @@ Dream.origin_referrer_check
@@ -122,6 +151,9 @@ let () =
       in
 
       let notes = process_notes source_ip in
+      let sorted_notes = 
+        List.sort (fun a b -> compare b.voteCount a.voteCount) notes
+      in
       `Assoc [("notes", `List (List.map (fun note -> 
         `Assoc [
           ("id", `String note.id);
@@ -129,9 +161,10 @@ let () =
           ("voteCount", `Int note.voteCount);
           ("userVote", `Int note.userVote);
           ("isUser", `Bool note.isUser);
-        ]) notes))]  
+        ]) sorted_notes))]  
       |> Yojson.Safe.to_string
       |> Dream.json
+
     );
 
     Dream.post "/"
@@ -162,10 +195,8 @@ let () =
             | [] -> []
             | _ -> all_notes |> take 30 
           in *)
-          let all_notes = new_note :: (read_notes () |> List.map yojson_of_note) in
-          
-          `Assoc [("notes", `List all_notes)] 
-          |> Yojson.Safe.to_file "db.json";
+
+          cached_notes := (new_note |> note_of_yojson) :: !cached_notes;
           
           `Assoc[
             ("body", new_note |> member "body"); 
@@ -193,7 +224,7 @@ let () =
               |> json_post_vote_request_of_yojson
             in
 
-            let all_notes = read_notes () in
+            let all_notes = !cached_notes in
 
             let updated_notes = 
               List.map (fun (note: note) ->
@@ -222,8 +253,7 @@ let () =
               ) all_notes
             in
 
-            `Assoc [("notes", `List (List.map yojson_of_note updated_notes))] 
-            |> Yojson.Safe.to_file "db.json";
+            cached_notes := updated_notes;
             
             `String "Vote recorded"
             |> Yojson.Safe.to_string
@@ -235,7 +265,7 @@ let () =
             Lwt.return_unit
           )
         );
-        
+
       Dream.delete "/"
       (fun request ->
         Mutex.lock mutex;
@@ -248,16 +278,15 @@ let () =
             |> json_delete_note_request_of_yojson
           in
 
-          let all_notes = read_notes () in
+          let all_notes = !cached_notes in
 
           let undeleted_notes = 
             List.filter (fun (note: note) ->
               not ((=) note.id delete_note_object.noteId) && ((=) note.source_ip delete_note_object.source_ip)
             ) all_notes
           in
-                    
-          `Assoc [("notes", `List (List.map yojson_of_note undeleted_notes))] 
-          |> Yojson.Safe.to_file "db.json";
+
+          cached_notes := undeleted_notes;
           
           "HTTP/1.1 200 OK"
           |> Dream.respond
