@@ -4,64 +4,71 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" href="./assets/favicon.ico">
   <title>Much Todo</title>
+  <meta name="description" content="Much Todo About Nothing will be a modern, feature-rich note-taking / todo list web application.">
+  <link rel="icon" href="./assets/favicon.svg" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="./assets/favicon-dark.svg" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="app.css">
   <script type="module" src="index.js"></script>
 </head>
 
 <body>
-  <div class="above-footer">
-    <div id="header" class="header">
-      <h1 id="title" class="title">Much Todo About Nothing</h1>
-      <h2 id="subtitle" class="subtitle">A notes app for the 24<sup>th</sup> century.</h2>
+
+  <div id="header" class="header">
+    <h1 id="title" class="title">Much Todo About Nothing</h1>
+    <h2 id="subtitle" class="subtitle"></h2>
+  </div>
+
+  <div class="content">
+    <div class="form">
+
+      <textarea type="text" id="note-input" class="note-input" placeholder="Write something..."></textarea>
+      <button aria-label="post note" id="note-post" class="note-post">Post</button>
     </div>
 
-    <div class="content">
-      <div class="form">
-
-        <textarea type="text" id="note-input" class="note-input" rows="10" placeholder="Write something..."></textarea>
-        <button id="note-post" class="note-post">Post</button>
-      </div>
-
-      <div class="notes" id="notes">
-        <!-- <p class="note">hello</p> -->
-      </div>
+    <div class="notes" id="notes">
     </div>
   </div>
 
+
   <footer>
-    <div class="column">
-      <p class="" style="color: #ef4444">All content is public.</p>
-      <p>Recieved <span id="unique-visitors"></span> unique visitors.</p>
-      <p>Processed <span id="page-views"></span> HTTP requests.</p>
-    </div>
-    <div class="column">
-      <p class="">Open source on <a href="https://github.com/typio/much-todo">GitHub</a>.</p>
-      <p>Much Todo by <a href="https://tohuber.com">Thomas Huber</a>.</p>
+    <div class="inner-footer">
+      <div class="column">
+        <p class="" style="color: var(--textdanger); font-weight: 500;">All content is public.</p>
+        <p>Recieved <span id="unique-visitors"></span> <span class="no-break">unique visitors.</span></p>
+        <p>Processed <span id="page-views"></span> <span class="no-break">HTTP requests.</spans>
+        </p>
+      </div>
+      <div class="column">
+        <p class="">Open source <span class="no-break">on <a
+              href="https://github.com/typio/much-todo">GitHub</a>.</span></p>
+        <p>Much Todo by <a href="https://tohuber.com" class="no-break">Thomas Huber</a>.</p>
+      </div>
     </div>
   </footer>
 </body>
 
 <style>
   html {
-    height: 100vh;
+    /* height: 100vh; */
     display: flex;
     flex-direction: column;
   }
 
   body {
     text-align: center;
-    background-color: rgb(252, 249, 232);
-    color: rgb(50, 50, 50);
+    align-items: center;
+    background-color: var(--bg);
+    color: var(--text);
     display: flex;
     flex-direction: column;
     flex: 1;
-    margin: 0;
+    margin: 0 5px;
+    min-height: 100vh;
   }
 
-  .above-footer {
-    min-height: 100vh;
+  .no-break {
+    white-space: nowrap;
   }
 
   .header {
@@ -70,8 +77,9 @@
     flex-direction: column;
     justify-content: center;
     top: 0;
-    height: 90px;
-    background-color: rgb(252, 249, 232);
+    width: 100%;
+    background-color: var(--bg);
+    z-index: 999;
   }
 
   .header-scrolled {
@@ -85,12 +93,14 @@
   .title,
   .subtitle {
     margin: 0;
+    color: var(--textdark);
   }
 
   .title {
     font-size: 1.9rem;
-    font-family: 'Times New Roman', Times, serif;
+    /* font-family: 'Times New Roman', Times, serif; */
     font-variant: petite-caps;
+    margin: 10px 0 2px 0;
   }
 
   @media (max-width: 768px) {
@@ -102,16 +112,18 @@
   .subtitle {
     font-size: 1rem;
     font-weight: 400;
-    margin-top: 4px;
+    height: 20px;
+    margin-bottom: 14px;
   }
 
   .content {
-    margin: 32px auto 0 auto;
+    margin: 32px 0 0 0;
     display: flex;
     flex-direction: column;
-    width: 95vw;
     max-width: 1024px;
     align-items: center;
+    justify-content: center;
+    width: 100%;
   }
 
   .form {
@@ -125,60 +137,72 @@
 
   .note-input {
     resize: none;
-    border: 1px solid black;
+    border: none;
+    color: var(--text);
+    background-color: var(--primary);
+    outline: 2px solid var(--primarydark);
     border-radius: 4px;
-    margin-bottom: 8px;
+    margin: 0 10px 6px 10px;
     padding: 8px;
+    height: fit-content;
+    height: 74px;
+    font-size: 15px;
+  }
+
+  .note-input::placeholder {
+    color: var(--textlight);
+  }
+
+  .note-input:focus,
+  .note-post:focus,
+  a:focus {
+    outline: 2px solid dodgerblue;
   }
 
   .note-post {
-    background-color: #18181b;
+    background-color: var(--highlight);
+    color: var(--highlighttext);
     border: none;
-    border-radius: 2px;
-    height: 45px;
-    width: 100px;
-    color: white;
+    border-radius: 4px;
+    height: 44px;
+    width: 80px;
     font-size: 1rem;
     margin-left: auto;
+    margin-right: 10px;
   }
 
   .note-post:hover {
-    background-color: #27272a;
+    background-color: var(--highlightlight);
   }
 
   .notes {
     display: flex;
-    flex-direction: row;
     flex-flow: row wrap;
-        max-width: 100%;
-  }
-
-  .note {
-    background-color: lightcoral;
-    margin: 4px;
-    padding: 4px;
-    border-radius: 8px;
-  }
-
-  .note-delete-btn {
-    background-color: none;
+    width: 100%;
+    justify-content: center;
   }
 
   footer {
-    margin: 10px;
+    margin-top: auto;
+    width: 100%
+  }
+
+  .inner-footer {
+    margin: 5px 5px 10px 5px;
     padding: 16px;
     border-radius: 8px;
-    background-color: rgb(242, 239, 222);
+    background-color: var(--primary);
     display: grid;
     grid: auto-flow / repeat(2, 1fr);
     column-gap: 20px;
+
   }
 
   footer p {
     margin: 4px 0 4px 0;
     font-size: 0.92rem;
     text-align: left;
-    color: #52525b;
+    color: var(--textlight);
     text-align: left;
   }
 
@@ -192,9 +216,14 @@
     align-items: end;
   }
 
+  footer .column:nth-child(2) * {
+    text-align: right;
+  }
+
+
   #unique-visitors,
   #page-views {
-    font-weight: bold;
+    font-weight: 599;
   }
 </style>
 

@@ -10,3 +10,19 @@
 a {
   color: unset;
 }
+
+:root {
+  --bg: #caf0f8;
+
+  --primary: #ade8f4;
+  --primarydark: #7fd4e5;
+
+  --text: #023e8a;
+  --textlight: #00679e;
+  --textdark: #03045e;
+  --textdanger: #c70017;
+
+  --highlight: #d4081f;
+  --highlightlight: #e71b33;
+  --highlighttext: #ffe0ff;
+}
