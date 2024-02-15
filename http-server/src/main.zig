@@ -49,8 +49,9 @@ var running: bool = true;
 const HTTPMethod = enum {
     HEAD,
     GET,
-    PUT,
     POST,
+    PUT,
+    PATCH,
     DELETE,
 };
 
@@ -372,11 +373,11 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
             defer write_stream.deinit();
             try write_stream.beginObject();
-            try write_stream.objectField("source_ip");
+            try write_stream.objectField("sourceIp");
             try write_stream.write(request.source_ip);
             try write_stream.endObject();
 
-            const appRequest = try std.fmt.allocPrint(allocator, "GET / HTTP/1.1\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
+            const appRequest = try std.fmt.allocPrint(allocator, "GET /notes HTTP/1.1\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
             _ = try stream.writeAll(appRequest);
 
             var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
@@ -443,11 +444,11 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             try write_stream.beginObject();
             try write_stream.objectField("body");
             try write_stream.write(requestBodyJSON.value.body);
-            try write_stream.objectField("source_ip");
+            try write_stream.objectField("sourceIp");
             try write_stream.write(request.source_ip);
             try write_stream.endObject();
 
-            const appRequest = try std.fmt.allocPrint(allocator, "POST / HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
+            const appRequest = try std.fmt.allocPrint(allocator, "POST /notes HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
 
             _ = try stream.writeAll(appRequest);
 
@@ -463,7 +464,9 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
             // }
-        } else if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
+        }
+    } else if (request.head.method == .PUT) {
+        if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
             const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
             defer stream.close();
 
@@ -479,11 +482,11 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             try write_stream.write(requestBodyJSON.value.like);
             try write_stream.objectField("noteId");
             try write_stream.write(requestBodyJSON.value.noteId);
-            try write_stream.objectField("source_ip");
+            try write_stream.objectField("sourceIp");
             try write_stream.write(request.source_ip);
             try write_stream.endObject();
 
-            const appRequest = try std.fmt.allocPrint(allocator, "POST /vote HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
+            const appRequest = try std.fmt.allocPrint(allocator, "PUT /notes/vote HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
 
             _ = try stream.writeAll(appRequest);
 
@@ -499,6 +502,44 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
             response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
             response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
         }
+    } else if (request.head.method == .PATCH) {
+        if (std.mem.eql(u8, request.head.path, "/api/notes/edit/body")) {
+            const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
+            defer stream.close();
+
+            const requestBodyJSON = try std.json.parseFromSlice(struct { body: []const u8, noteId: []const u8 }, allocator, request.body, .{});
+            defer requestBodyJSON.deinit();
+
+            var appRequestJSON = std.ArrayList(u8).init(allocator);
+            defer appRequestJSON.deinit();
+            var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
+            defer write_stream.deinit();
+            try write_stream.beginObject();
+            try write_stream.objectField("body");
+            try write_stream.write(requestBodyJSON.value.body);
+            try write_stream.objectField("noteId");
+            try write_stream.write(requestBodyJSON.value.noteId);
+            try write_stream.objectField("sourceIp");
+            try write_stream.write(request.source_ip);
+            try write_stream.endObject();
+
+            const appRequest = try std.fmt.allocPrint(allocator, "PATCH /notes/edit/body HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
+
+            _ = try stream.writeAll(appRequest);
+
+            var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
+            // while (true) {
+            const bytes_read = try stream.read(appResponseBuffer[0..]);
+            // if (bytes_read == 0) break;
+
+            var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
+            _ = it.next() orelse "";
+
+            const appResponseBody = it.next() orelse "";
+            response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
+            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 204 No Content\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
+            // }
+        }
     } else if (request.head.method == .DELETE) {
         const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
         defer stream.close();
@@ -513,11 +554,11 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
         try write_stream.beginObject();
         try write_stream.objectField("noteId");
         try write_stream.write(requestBodyJSON.value.noteId);
-        try write_stream.objectField("source_ip");
+        try write_stream.objectField("sourceIp");
         try write_stream.write(request.source_ip);
         try write_stream.endObject();
 
-        const appRequest = try std.fmt.allocPrint(allocator, "DELETE / HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
+        const appRequest = try std.fmt.allocPrint(allocator, "DELETE /notes HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
 
         _ = try stream.writeAll(appRequest);
 
@@ -536,7 +577,7 @@ fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void
     }
 
     if (response_buffers.body == null or response_buffers.header == null) {
-        response_buffers.body = "{{\"code\": 404, \"message\": \"Not Found\"}}";
+        response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"code\": 404, \"message\": \"Not Found\"}}", .{});
         response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {any}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
     }
 
