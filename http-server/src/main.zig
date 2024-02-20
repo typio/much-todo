@@ -3,15 +3,8 @@ const std = @import("std");
 const cli = @import("zig-cli");
 
 const c = @cImport({
-    @cInclude("sys/types.h");
-    @cInclude("sys/time.h");
-    @cInclude("sys/select.h");
-
     @cInclude("unistd.h");
 
-    @cInclude("signal.h");
-
-    @cInclude("sys/socket.h");
     @cInclude("arpa/inet.h");
 
     @cInclude("openssl/ssl.h");
@@ -112,7 +105,7 @@ fn initializeServer() !*c.SSL_CTX {
 fn loadCertificates(ctx: *c.SSL_CTX) !void {
     if (server_config.mode != ServerModes.release) return;
 
-    //TODO: set this programatically
+    // TODO: set this programatically
     // remote linux server
     if (c.SSL_CTX_use_certificate_file(ctx, "/etc/letsencrypt/live/muchtodo.app/fullchain.pem", c.SSL_FILETYPE_PEM) <= 0 or
         c.SSL_CTX_use_PrivateKey_file(ctx, "/etc/letsencrypt/live/muchtodo.app/privkey.pem", c.SSL_FILETYPE_PEM) <= 0)
@@ -145,7 +138,6 @@ fn logIp(client: *c.BIO) ![]const u8 {
     if (server_config.mode == ServerModes.debug) return "127.0.0.1";
 
     var ip_string: ?[]const u8 = null;
-    // const now = std.time.timestamp();
 
     const client_fd: c_int = @intCast(c.BIO_get_fd(client, null));
     var client_addr: c.struct_sockaddr = .{};

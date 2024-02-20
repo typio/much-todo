@@ -3,7 +3,6 @@ const std = @import("std");
 const main = @import("./main.zig");
 
 const RouteFileDescriptor = struct { server_path: []const u8, mime_type: []const u8 };
-// pub var routeToFileMap: std.StringHashMap(RouteFileDescriptor) = undefined;
 
 const MimeType = struct { mime: []const u8, extensions: []const []const u8 };
 const mimeTypes = [_]MimeType{

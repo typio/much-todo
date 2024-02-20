@@ -23,7 +23,6 @@ pub fn build(b: *std.Build) void {
     }
 
     exe.linkLibC();
-    // exe.linkSystemLibrary("c");
     exe.linkSystemLibrary("ssl");
     exe.linkSystemLibrary("crypto");
 
