@@ -3,6 +3,12 @@ const std = @import("std");
 const cli = @import("zig-cli");
 
 const c = @cImport({
+    @cInclude("sys/types.h");
+    @cInclude("sys/time.h");
+    @cInclude("sys/select.h");
+
+    @cInclude("unistd.h");
+
     @cInclude("signal.h");
 
     @cInclude("sys/socket.h");
@@ -12,6 +18,9 @@ const c = @cImport({
     @cInclude("openssl/err.h");
     @cInclude("openssl/bio.h");
 });
+
+const file_server = @import("./file_server.zig");
+const api = @import("./api.zig");
 
 const ServerModes = enum { debug, release };
 const ServerConfig = struct {
@@ -43,10 +52,12 @@ var app = &cli.App{ .command = cli.Command{ .name = "much-todo http server", .op
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
+var file_server_instance: file_server.FileServer = undefined;
 
+var server_start_time: i64 = undefined;
 var running: bool = true;
 
-const HTTPMethod = enum {
+pub const HTTPMethod = enum {
     HEAD,
     GET,
     POST,
@@ -55,42 +66,22 @@ const HTTPMethod = enum {
     DELETE,
 };
 
-const HTTPHead = struct { path: []const u8, method: HTTPMethod, content_length: u16 };
-
-const HTTPRequest = struct { head: HTTPHead, body: []const u8, source_ip: []const u8 };
-
-const USER_REQUEST_BUFFER_SIZE = 32 * 1024;
-const API_RESPONSE_BUFFER_SIZE = 256 * 1024;
-const FILE_SERVE_BUFFER_SIZE = 2000 * 1024;
-
-const RouteFileDescriptor = struct { server_path: []const u8, mime_type: []const u8 };
-var routeToFileMap: std.StringHashMap(RouteFileDescriptor) = undefined;
-
-const MimeType = struct { mime: []const u8, extensions: []const []const u8 };
-const mimeTypes = [_]MimeType{
-    MimeType{ .mime = "text/html", .extensions = &[_][]const u8{ ".html", ".htm" } },
-    MimeType{ .mime = "text/css", .extensions = &[_][]const u8{".css"} },
-    MimeType{ .mime = "application/javascript", .extensions = &[_][]const u8{".js"} },
-    MimeType{ .mime = "application/json", .extensions = &[_][]const u8{".json"} },
-    MimeType{ .mime = "image/jpeg", .extensions = &[_][]const u8{ ".jpeg", ".jpg" } },
-    MimeType{ .mime = "image/png", .extensions = &[_][]const u8{".png"} },
-    MimeType{ .mime = "image/webp", .extensions = &[_][]const u8{".webp"} },
-    MimeType{ .mime = "image/svg+xml", .extensions = &[_][]const u8{".svg"} },
-    MimeType{ .mime = "image/gif", .extensions = &[_][]const u8{".gif"} },
-    MimeType{ .mime = "text/plain", .extensions = &[_][]const u8{".txt"} },
-    MimeType{ .mime = "application/pdf", .extensions = &[_][]const u8{".pdf"} },
-    MimeType{ .mime = "application/xml", .extensions = &[_][]const u8{".xml"} },
-    MimeType{ .mime = "font/woff", .extensions = &[_][]const u8{".woff"} },
-    MimeType{ .mime = "font/woff2", .extensions = &[_][]const u8{".woff2"} },
-    MimeType{ .mime = "font/ttf", .extensions = &[_][]const u8{".ttf"} },
-    MimeType{ .mime = "font/otf", .extensions = &[_][]const u8{".otf"} },
-    MimeType{ .mime = "video/mp4", .extensions = &[_][]const u8{".mp4"} },
-    MimeType{ .mime = "video/webm", .extensions = &[_][]const u8{".webm"} },
-    MimeType{ .mime = "video/ogg", .extensions = &[_][]const u8{".ogg"} },
-    MimeType{ .mime = "audio/mpeg", .extensions = &[_][]const u8{".mpeg"} },
-    MimeType{ .mime = "audio/ogg", .extensions = &[_][]const u8{".ogg"} },
-    MimeType{ .mime = "audio/wav", .extensions = &[_][]const u8{".wav"} },
+// NOTE: head includes /r/n/r/n seperator for convenience
+pub const ResponseBuffers = struct {
+    head: ?[]const u8,
+    body: ?[]const u8,
 };
+
+pub const HTTPHead = struct { path: []const u8, method: HTTPMethod, content_length: u16 };
+
+pub const HTTPRequest = struct { head: HTTPHead, body: []const u8, source_ip: []const u8 };
+
+pub const USER_REQUEST_BUFFER_SIZE = 32 * 1024;
+pub const API_RESPONSE_BUFFER_SIZE = 256 * 1024;
+pub const FILE_SERVE_BUFFER_SIZE = 2000 * 1024;
+
+const MAX_POLL_ATTEMPTS = 10;
+const POLL_MS_TIMEOUT = 1000;
 
 pub fn handleExitSignal(signum: c_int) callconv(.C) void {
     switch (signum) {
@@ -99,43 +90,6 @@ pub fn handleExitSignal(signum: c_int) callconv(.C) void {
         else => {},
     }
     running = false;
-}
-
-fn getMimeTypeOfExtension(extension: []const u8) !?[]const u8 {
-    var lowercase_extension = try std.mem.Allocator.dupe(allocator, u8, extension);
-    lowercase_extension = std.ascii.lowerString(lowercase_extension, extension);
-
-    for (mimeTypes) |mimeType| {
-        for (mimeType.extensions) |ext| {
-            if (std.mem.eql(u8, ext, lowercase_extension[0..])) {
-                return mimeType.mime;
-            }
-        }
-    }
-    return undefined;
-}
-
-fn initializeStaticRoutes() !void {
-    routeToFileMap = std.StringHashMap(RouteFileDescriptor).init(allocator);
-
-    const frontend_dir = try std.fs.cwd().openDir("build/frontend", std.fs.Dir.OpenDirOptions{ .iterate = true });
-    var frontend_walker = try frontend_dir.walk(allocator);
-    defer frontend_walker.deinit();
-    while (try frontend_walker.next()) |walker_entry| {
-        if (walker_entry.kind == std.fs.File.Kind.file and walker_entry.path[0] != '_') {
-            const file_path = try std.mem.Allocator.dupe(allocator, u8, walker_entry.path);
-            var route = file_path;
-            if (std.mem.eql(u8, file_path, "index.html")) {
-                route = try std.fmt.allocPrint(allocator, "/", .{});
-            } else {
-                route = try std.fmt.allocPrint(allocator, "/{s}", .{file_path});
-            }
-
-            const mime_type = try getMimeTypeOfExtension(std.fs.path.extension(walker_entry.basename));
-
-            try routeToFileMap.put(route, RouteFileDescriptor{ .server_path = try std.fmt.allocPrint(allocator, "build/frontend/{s}", .{file_path}), .mime_type = mime_type orelse "text/html" });
-        }
-    }
 }
 
 fn initializeServer() !*c.SSL_CTX {
@@ -158,37 +112,43 @@ fn initializeServer() !*c.SSL_CTX {
 fn loadCertificates(ctx: *c.SSL_CTX) !void {
     if (server_config.mode != ServerModes.release) return;
 
+    //TODO: set this programatically
+    // remote linux server
     if (c.SSL_CTX_use_certificate_file(ctx, "/etc/letsencrypt/live/muchtodo.app/fullchain.pem", c.SSL_FILETYPE_PEM) <= 0 or
         c.SSL_CTX_use_PrivateKey_file(ctx, "/etc/letsencrypt/live/muchtodo.app/privkey.pem", c.SSL_FILETYPE_PEM) <= 0)
     {
         std.debug.print("Failed to load certificate or key.\n", .{});
         return;
     }
-}
 
-fn bindAndListen() !*c.BIO {
-    std.debug.print("Port: {s}\n", .{server_config.port});
-
-    const socket = c.BIO_new_accept(@ptrCast(server_config.port));
-    _ = c.BIO_set_accept_bios(socket, null);
-    if (c.BIO_do_accept(socket) <= 0) {
-        std.debug.print("Failed to bind.\n", .{});
-        return error.FailedToBind;
-    }
-    if (socket) |unwraped_socket| {
-        return unwraped_socket;
-    } else {
-        std.debug.print("Failed to bind.\n", .{});
-        return error.FailedToBind;
-    }
+    // local machine
+    // if (c.SSL_CTX_use_certificate_file(ctx, "build/cert.pem", c.SSL_FILETYPE_PEM) <= 0 or
+    //     c.SSL_CTX_use_PrivateKey_file(ctx, "build/key.pem", c.SSL_FILETYPE_PEM) <= 0)
+    // {
+    //     std.debug.print("Failed to load certificate or key.\n", .{});
+    //     return;
+    // }
 }
 
 fn logIp(client: *c.BIO) ![]const u8 {
-    var ip_string: []const u8 = undefined;
-    const now = std.time.timestamp();
+    const filename = "http-server.log";
+    const contents = try std.fs.cwd().readFileAlloc(allocator, filename, FILE_SERVE_BUFFER_SIZE);
+    defer allocator.free(contents);
+    var logLines = std.mem.splitScalar(u8, contents, '\n');
+    const request_count: usize = std.fmt.parseInt(u32, logLines.first(), 10) catch 0;
+
+    const file = try std.fs.cwd().createFile(filename, .{ .read = false, .truncate = true });
+    defer file.close();
+
+    try file.writeAll(try std.fmt.allocPrint(allocator, "{d}\n{d}", .{ request_count + 1, server_start_time }));
+
+    if (server_config.mode == ServerModes.debug) return "127.0.0.1";
+
+    var ip_string: ?[]const u8 = null;
+    // const now = std.time.timestamp();
 
     const client_fd: c_int = @intCast(c.BIO_get_fd(client, null));
-    var client_addr: c.struct_sockaddr = undefined;
+    var client_addr: c.struct_sockaddr = .{};
 
     // can't use struct_sockaddr_storage bc of getpeername type checking
     var client_addr_len: std.os.socklen_t = @sizeOf(c.struct_sockaddr);
@@ -227,50 +187,11 @@ fn logIp(client: *c.BIO) ![]const u8 {
         },
     }
 
-    std.debug.print("IP: {s} connected.\n", .{ip_string});
+    ip_string = ip_string orelse try std.fmt.allocPrint(allocator, "{s}", .{"no ip!"});
 
-    const filename = "client_ips.log";
-    const file = try std.fs.cwd().createFile(filename, .{ .read = false, .truncate = false });
-    defer file.close();
-    const stat = try file.stat();
-    try file.seekTo(stat.size);
+    std.debug.print("IP: {s} connected.\n", .{ip_string.?});
 
-    var writer = file.writer();
-    try writer.print("{s} at {d}\n", .{ ip_string, now });
-
-    return ip_string;
-}
-
-fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
-    var ssl: ?*c.SSL = null;
-
-    var source_ip: []const u8 = undefined;
-    if (server_config.mode == .release) {
-        source_ip = try logIp(client);
-    } else {
-        source_ip = "127.0.0.1";
-    }
-
-    if (server_config.mode == ServerModes.release) {
-        ssl = c.SSL_new(ctx);
-        c.SSL_set_bio(ssl, client, client);
-
-        if (c.SSL_accept(ssl) <= 0) {
-            const err = c.ERR_get_error();
-            var errbuf: [256]u8 = undefined;
-            c.ERR_error_string_n(err, &errbuf, errbuf.len);
-            std.debug.print("Failed SSL handshake: {s}\n", .{errbuf[0..]});
-            return;
-        }
-    }
-    try handleClientRequest(client, ssl, source_ip);
-
-    if (ssl) |ssl_obj| {
-        if (c.SSL_shutdown(ssl_obj) == 0) {
-            _ = c.SSL_shutdown(ssl_obj);
-        }
-        c.SSL_free(ssl_obj);
-    }
+    return ip_string.?;
 }
 
 fn parseHead(head: []const u8) !HTTPHead {
@@ -280,8 +201,8 @@ fn parseHead(head: []const u8) !HTTPHead {
 
     var start_line_parts = std.mem.splitScalar(u8, first_line, ' ');
 
-    const method = std.meta.stringToEnum(HTTPMethod, start_line_parts.next() orelse "").?;
-    const path = start_line_parts.next() orelse "";
+    const method = std.meta.stringToEnum(HTTPMethod, start_line_parts.next() orelse return error.MalformedRequest) orelse return error.MalformedRequest;
+    const path = start_line_parts.next() orelse return error.MalformedRequest;
 
     var content_length: u16 = 0;
     while (head_lines.next()) |line| {
@@ -303,315 +224,259 @@ fn parseHead(head: []const u8) !HTTPHead {
 }
 
 fn handleClientRequest(client: *c.BIO, ssl: ?*c.SSL, source_ip: []const u8) !void {
-    var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = undefined;
-    const bytes_read = switch (server_config.mode) {
-        ServerModes.release => c.SSL_read(ssl, &buffer, buffer.len),
-        else => c.BIO_read(client, &buffer, buffer.len),
+    var request_head: ?HTTPHead = null;
+    var request_body: ?[]const u8 = null;
+
+    var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = [_]u8{0} ** USER_REQUEST_BUFFER_SIZE;
+    var total_read: usize = 0;
+
+    const fd = switch (server_config.mode) {
+        ServerModes.release => c.SSL_get_fd(ssl.?),
+        else => c.BIO_get_fd(client, null),
     };
 
-    if (bytes_read <= 0) {
-        std.debug.print("Connection closed by client or error occurred.\n", .{});
-        return;
-    }
+    var attempts: usize = 0;
 
-    const first_read = buffer[0..@as(usize, @intCast(bytes_read))];
+    var poll_fds: [1]std.os.pollfd = [_]std.os.pollfd{.{ .revents = 0, .fd = @intCast(fd), .events = std.os.POLL.IN }};
 
-    var request_parts = std.mem.splitSequence(u8, first_read, "\r\n\r\n");
+    while (true) {
+        const n = try std.os.poll(&poll_fds, POLL_MS_TIMEOUT);
+        if (n > 0 and (poll_fds[0].revents & std.os.POLL.IN) != 0) {
+            const read_result = switch (server_config.mode) {
+                ServerModes.release => c.SSL_read(ssl, &buffer, @intCast(buffer.len - total_read)),
+                else => c.BIO_read(client, &buffer, @intCast(buffer.len - total_read)),
+            };
 
-    const request_head = try parseHead(request_parts.next() orelse "");
-    var request_body = request_parts.next() orelse "";
+            if (read_result > 0) {
+                total_read += @intCast(read_result);
 
-    var body_reads: u8 = 0;
-    while (request_head.content_length > 0 and request_head.content_length > request_body.len) {
-        var read_buffer: [USER_REQUEST_BUFFER_SIZE]u8 = undefined;
+                const initial_read = buffer[0..@as(usize, @intCast(total_read))];
 
-        const bodyBytesRead = switch (server_config.mode) {
-            ServerModes.release => c.SSL_read(ssl, &read_buffer, read_buffer.len),
-            else => c.BIO_read(client, &read_buffer, read_buffer.len),
-        };
-        const next_body_read = read_buffer[0..@as(usize, @intCast(bodyBytesRead))];
+                var request_parts = std.mem.splitSequence(u8, initial_read, "\r\n\r\n");
+                request_head = parseHead(request_parts.next() orelse return error.MalformedRequest) catch return error.MalformedRequest;
 
-        request_body = try std.mem.concat(allocator, u8, &[_][]const u8{ request_body, next_body_read });
-        body_reads += 1;
+                request_body = request_parts.next() orelse "";
 
-        if (body_reads > 10) {
-            std.log.warn("Read body 10 times! Sending request as is.", .{});
-            break;
+                // If the Content-Length header indicates more data, attempt to read more
+                if (request_head.?.content_length > request_body.?.len) {
+                    // Calculate remaining bytes to read
+                    var remaining_bytes = request_head.?.content_length - @as(u16, @intCast(request_body.?.len));
+                    var total_read_bytes = request_body.?.len;
+                    while (remaining_bytes > 0) {
+                        std.debug.print("Remaining {d} of {d}\n", .{ remaining_bytes, total_read_bytes });
+                        var read_buffer: [USER_REQUEST_BUFFER_SIZE]u8 = [_]u8{0} ** USER_REQUEST_BUFFER_SIZE;
+                        const body_bytes_read = switch (server_config.mode) {
+                            ServerModes.release => c.SSL_read(ssl, &read_buffer, remaining_bytes),
+                            else => c.BIO_read(client, &read_buffer, remaining_bytes),
+                        };
+                        if (body_bytes_read <= 0) {
+                            std.debug.print("Failed to read remaining body bytes.\n", .{});
+                            return;
+                        }
+                        // Append read bytes to request body
+                        request_body.? = try std.mem.concat(allocator, u8, &[_][]const u8{ request_body.?, read_buffer[0..@as(usize, @intCast(body_bytes_read))] });
+                        remaining_bytes -= @as(u16, @intCast(body_bytes_read));
+                        total_read_bytes += @as(usize, @intCast(body_bytes_read));
+                        if (total_read_bytes > USER_REQUEST_BUFFER_SIZE) {
+                            std.debug.print("Request body exceeds buffer size.\n", .{});
+                            return;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            } else if (read_result == 0) {
+                // std.debug.print("Connection closed by peer.\n", .{});
+                return;
+            } else {
+                break;
+            }
+        } else if (n == 0) {
+            attempts += 1;
+            std.debug.print("Write timeout, attempt {d} of {d}.\n", .{ attempts, MAX_POLL_ATTEMPTS });
+            if (attempts >= MAX_POLL_ATTEMPTS) {
+                std.debug.print("Max read attempts reached, giving up.\n", .{});
+                return;
+            }
+        } else {
+            std.debug.print("Error during write poll.\n", .{});
+            return;
         }
     }
 
-    const httpRequest = HTTPRequest{ .head = request_head, .body = request_body, .source_ip = source_ip };
-
-    try parseRequest(&httpRequest, client, ssl);
+    if (request_head != null and request_body != null) {
+        const httpRequest = HTTPRequest{ .head = request_head.?, .body = request_body.?, .source_ip = source_ip };
+        try parseRequest(httpRequest, client, ssl);
+    }
 }
 
-fn parseRequest(request: *const HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void {
-    var response_buffers = ResponseBuffers{ .header = null, .body = null };
-    defer if (response_buffers.header) |header| allocator.free(header);
+fn parseRequest(request: HTTPRequest, client: *c.BIO, ssl: ?*c.SSL) !void {
+    var response_buffers = ResponseBuffers{ .head = null, .body = null };
+    defer if (response_buffers.head) |head| allocator.free(head);
     defer if (response_buffers.body) |body| allocator.free(body);
 
-    if (request.head.method == .GET or request.head.method == .HEAD) {
-        if (routeToFileMap.contains(request.head.path)) {
-            const file_descriptor = routeToFileMap.get(request.head.path) orelse return;
-            const filename = file_descriptor.server_path;
-            const mime_type = file_descriptor.mime_type;
-
-            const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
-            defer file.close();
-            response_buffers.body = try file.reader().readAllAlloc(
-                allocator,
-                FILE_SERVE_BUFFER_SIZE,
-            );
-
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{ mime_type, response_buffers.body.?.len });
-        } else if (std.mem.eql(u8, request.head.path, "/api/notes")) {
-            const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
-            defer stream.close();
-
-            var appRequestJSON = std.ArrayList(u8).init(allocator);
-            defer appRequestJSON.deinit();
-            var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
-            defer write_stream.deinit();
-            try write_stream.beginObject();
-            try write_stream.objectField("sourceIp");
-            try write_stream.write(request.source_ip);
-            try write_stream.endObject();
-
-            const appRequest = try std.fmt.allocPrint(allocator, "GET /notes HTTP/1.1\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
-            _ = try stream.writeAll(appRequest);
-
-            var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
-            // while (true) {
-            const bytes_read = try stream.read(appResponseBuffer[0..]);
-            // if (bytes_read == 0) break;
-
-            var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
-            _ = it.next();
-            const appResponseBody = it.next() orelse "";
-
-            response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-            // }
-        } else if (std.mem.eql(u8, request.head.path, "/api/viewCount")) {
-            const contents = try std.fs.cwd().readFileAlloc(allocator, "client_ips.log", 100 * FILE_SERVE_BUFFER_SIZE);
-            defer allocator.free(contents);
-            var ip_strings = std.mem.tokenizeScalar(u8, contents, '\n');
-            var unique_ip_count: usize = 0;
-            var view_count: usize = 0;
-            var unique_ip_set = std.BufSet.init(allocator);
-
-            while (ip_strings.next()) |ip_string| {
-                if (ip_string.len == 0) continue;
-                view_count += 1;
-
-                var ip_log_parts = std.mem.tokenizeScalar(u8, ip_string, ' ');
-                const ip = ip_log_parts.next().?;
-
-                if (!unique_ip_set.contains(ip)) {
-                    unique_ip_count += 1;
-                    try unique_ip_set.insert(ip);
-                }
-            }
-            response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"view_count\": {d}, \"unique_ip_count\": {d}}}", .{ view_count, unique_ip_count });
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-        } else {
-            std.log.info("404 not found: {s}", .{request.head.path});
-
-            const filename = "build/frontend/_404.html";
-            const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
-
-            defer file.close();
-
-            response_buffers.body = try file.reader().readAllAlloc(
-                allocator,
-                FILE_SERVE_BUFFER_SIZE,
-            );
-
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-        }
-    } else if (request.head.method == .POST) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes")) {
-            const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
-            defer stream.close();
-
-            const requestBodyJSON = try std.json.parseFromSlice(struct { title: []const u8, body: []const u8 }, allocator, request.body, .{});
-            defer requestBodyJSON.deinit();
-
-            var appRequestJSON = std.ArrayList(u8).init(allocator);
-            defer appRequestJSON.deinit();
-            var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
-            defer write_stream.deinit();
-            try write_stream.beginObject();
-            try write_stream.objectField("body");
-            try write_stream.write(requestBodyJSON.value.body);
-            try write_stream.objectField("sourceIp");
-            try write_stream.write(request.source_ip);
-            try write_stream.endObject();
-
-            const appRequest = try std.fmt.allocPrint(allocator, "POST /notes HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
-
-            _ = try stream.writeAll(appRequest);
-
-            var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
-            // while (true) {
-            const bytes_read = try stream.read(appResponseBuffer[0..]);
-            // if (bytes_read == 0) break;
-
-            var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
-            _ = it.next() orelse "";
-
-            const appResponseBody = it.next() orelse "";
-            response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-            // }
-        }
-    } else if (request.head.method == .PUT) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
-            const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
-            defer stream.close();
-
-            const requestBodyJSON = try std.json.parseFromSlice(struct { like: bool, noteId: []const u8 }, allocator, request.body, .{});
-            defer requestBodyJSON.deinit();
-
-            var appRequestJSON = std.ArrayList(u8).init(allocator);
-            defer appRequestJSON.deinit();
-            var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
-            defer write_stream.deinit();
-            try write_stream.beginObject();
-            try write_stream.objectField("like");
-            try write_stream.write(requestBodyJSON.value.like);
-            try write_stream.objectField("noteId");
-            try write_stream.write(requestBodyJSON.value.noteId);
-            try write_stream.objectField("sourceIp");
-            try write_stream.write(request.source_ip);
-            try write_stream.endObject();
-
-            const appRequest = try std.fmt.allocPrint(allocator, "PUT /notes/vote HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
-
-            _ = try stream.writeAll(appRequest);
-
-            var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
-            // while (true) {
-            const bytes_read = try stream.read(appResponseBuffer[0..]);
-            // if (bytes_read == 0) break;
-
-            var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
-            _ = it.next() orelse "";
-
-            const appResponseBody = it.next() orelse "";
-            response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-        }
-    } else if (request.head.method == .PATCH) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes/edit/body")) {
-            const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
-            defer stream.close();
-
-            const requestBodyJSON = try std.json.parseFromSlice(struct { body: []const u8, noteId: []const u8 }, allocator, request.body, .{});
-            defer requestBodyJSON.deinit();
-
-            var appRequestJSON = std.ArrayList(u8).init(allocator);
-            defer appRequestJSON.deinit();
-            var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
-            defer write_stream.deinit();
-            try write_stream.beginObject();
-            try write_stream.objectField("body");
-            try write_stream.write(requestBodyJSON.value.body);
-            try write_stream.objectField("noteId");
-            try write_stream.write(requestBodyJSON.value.noteId);
-            try write_stream.objectField("sourceIp");
-            try write_stream.write(request.source_ip);
-            try write_stream.endObject();
-
-            const appRequest = try std.fmt.allocPrint(allocator, "PATCH /notes/edit/body HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
-
-            _ = try stream.writeAll(appRequest);
-
-            var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
-            // while (true) {
-            const bytes_read = try stream.read(appResponseBuffer[0..]);
-            // if (bytes_read == 0) break;
-
-            var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
-            _ = it.next() orelse "";
-
-            const appResponseBody = it.next() orelse "";
-            response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
-            response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 204 No Content\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-            // }
-        }
-    } else if (request.head.method == .DELETE) {
-        const stream = try std.net.tcpConnectToHost(allocator, "localhost", 7050);
-        defer stream.close();
-
-        const requestBodyJSON = try std.json.parseFromSlice(struct { noteId: []const u8 }, allocator, request.body, .{});
-        defer requestBodyJSON.deinit();
-
-        var appRequestJSON = std.ArrayList(u8).init(allocator);
-        defer appRequestJSON.deinit();
-        var write_stream = std.json.writeStream(appRequestJSON.writer(), .{ .whitespace = .indent_2 });
-        defer write_stream.deinit();
-        try write_stream.beginObject();
-        try write_stream.objectField("noteId");
-        try write_stream.write(requestBodyJSON.value.noteId);
-        try write_stream.objectField("sourceIp");
-        try write_stream.write(request.source_ip);
-        try write_stream.endObject();
-
-        const appRequest = try std.fmt.allocPrint(allocator, "DELETE /notes HTTP/1.1\r\nOrigin: http://localhost:7050\r\nHost: localhost:7050\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ appRequestJSON.items.len, appRequestJSON.items });
-
-        _ = try stream.writeAll(appRequest);
-
-        var appResponseBuffer: [API_RESPONSE_BUFFER_SIZE]u8 = undefined;
-        const bytes_read = try stream.read(appResponseBuffer[0..]);
-
-        var it = std.mem.split(u8, appResponseBuffer[0..bytes_read], "\r\n\r\n");
-        _ = it.next() orelse "";
-        const appResponseBody = it.next() orelse "";
-
-        response_buffers.body = try std.fmt.allocPrint(allocator, "{s}", .{appResponseBody});
-        response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
-        // }
-    } else {
-        std.log.info("Unsupported request method: {?}, on path: {s}", .{ request.head.method, request.head.path });
+    if ((request.head.method == .GET or request.head.method == .HEAD) and file_server_instance.routeToFileMap.contains(request.head.path)) {
+        response_buffers = (try file_server_instance.serveFile(request.head.path)).?;
     }
 
-    if (response_buffers.body == null or response_buffers.header == null) {
-        response_buffers.body = try std.fmt.allocPrint(allocator, "{{\"code\": 404, \"message\": \"Not Found\"}}", .{});
-        response_buffers.header = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {any}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
+    if (std.mem.startsWith(u8, request.head.path, "/api/")) {
+        if (try api.handleRequest(&allocator, request)) |res| {
+            response_buffers = res;
+        }
     }
 
-    // Serve the reponse
+    if (response_buffers.body == null or response_buffers.head == null) {
+        std.log.info("404 not found: {s}", .{request.head.path});
+
+        const filename = "build/frontend/_404.html";
+        const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
+
+        defer file.close();
+
+        response_buffers.body = try file.reader().readAllAlloc(
+            allocator,
+            FILE_SERVE_BUFFER_SIZE,
+        );
+
+        response_buffers.head = try std.fmt.allocPrint(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\nServer: much-todo\r\n\r\n", .{response_buffers.body.?.len});
+    }
+
     if (request.head.method == .HEAD) {
-        const buffer = try allocator.alloc(u8, response_buffers.header.?.len);
-        std.mem.copyForwards(u8, buffer, response_buffers.header.?);
+        const buffer = try allocator.alloc(u8, response_buffers.head.?.len);
+        std.mem.copyForwards(u8, buffer, response_buffers.head.?);
         try serveBytes(client, ssl, buffer);
     } else {
-        var buffer = try allocator.alloc(u8, response_buffers.header.?.len + response_buffers.body.?.len);
-        std.mem.copyForwards(u8, buffer, response_buffers.header.?);
-        std.mem.copyForwards(u8, buffer[response_buffers.header.?.len..], response_buffers.body.?);
+        var buffer = try allocator.alloc(u8, response_buffers.head.?.len + response_buffers.body.?.len);
+        std.mem.copyForwards(u8, buffer, response_buffers.head.?);
+        std.mem.copyForwards(u8, buffer[response_buffers.head.?.len..], response_buffers.body.?);
         try serveBytes(client, ssl, buffer);
     }
 }
 
-const ResponseBuffers = struct {
-    header: ?[]const u8,
-    body: ?[]const u8,
-};
-
 fn serveBytes(client: *c.BIO, ssl: ?*c.SSL, bytes: []const u8) !void {
-    const bytes_written = switch (server_config.mode) {
-        ServerModes.release => c.SSL_write(ssl, @as(*const anyopaque, bytes.ptr), @intCast(bytes.len)),
-        else => c.BIO_write(client, @as(*const anyopaque, bytes.ptr), @intCast(bytes.len)),
+    var total_bytes_written: usize = 0;
+
+    var attempts: usize = 0;
+
+    const fd = switch (server_config.mode) {
+        ServerModes.release => c.SSL_get_fd(ssl.?),
+        else => c.BIO_get_fd(client, null),
     };
 
-    if (bytes_written <= 0) {
-        std.log.err("Failed to write.", .{});
+    var poll_fds: [1]std.os.pollfd = [_]std.os.pollfd{.{ .revents = 0, .fd = @intCast(fd), .events = std.os.POLL.OUT }};
+
+    while (total_bytes_written < bytes.len) {
+        const n = try std.os.poll(&poll_fds, POLL_MS_TIMEOUT);
+        if (n > 0 and (poll_fds[0].revents & std.os.POLL.OUT) != 0) {
+            const remaining_bytes = bytes.len - total_bytes_written;
+            const chunk = bytes[total_bytes_written..];
+            const bytes_written = switch (server_config.mode) {
+                ServerModes.release => c.SSL_write(ssl, chunk.ptr, @intCast(remaining_bytes)),
+                else => c.BIO_write(client, chunk.ptr, @intCast(remaining_bytes)),
+            };
+
+            if (bytes_written > 0) {
+                attempts = 0;
+                total_bytes_written += @intCast(bytes_written);
+            } else if (bytes_written == 0) {
+                std.debug.print("Connection closed by peer during write.\n", .{});
+                return;
+            } else {
+                const write_error = if (server_config.mode == .release) c.SSL_get_error(ssl.?, bytes_written) else -1;
+                if (write_error == c.SSL_ERROR_WANT_WRITE or write_error == c.SSL_ERROR_WANT_READ) {
+                    continue;
+                } else {
+                    std.debug.print("Write error: {d}\n", .{write_error});
+                    return;
+                }
+            }
+        } else if (n == 0) {
+            // Timeout handling
+            attempts += 1;
+            std.debug.print("Write timeout, attempt {d} of {d}.\n", .{ attempts, MAX_POLL_ATTEMPTS });
+            if (attempts >= MAX_POLL_ATTEMPTS) {
+                std.debug.print("Max write attempts reached, giving up.\n", .{});
+                return; // Exceeded max attempts, give up
+            }
+        } else {
+            std.debug.print("Error during read poll.\n", .{});
+            return;
+        }
+    }
+}
+
+fn bindAndListen() !*c.BIO {
+    std.debug.print("Port: {s}\n", .{server_config.port});
+
+    const bio = c.BIO_new_accept(@ptrCast(server_config.port)) orelse {
+        std.debug.print("Failed to create BIO socket.\n", .{});
+        return error.FailedToCreateSocket;
+    };
+
+    if (c.BIO_set_nbio(bio, 1) <= 0) {
+        c.BIO_free_all(bio);
+        std.debug.print("Failed to set BIO to non-blocking mode.\n", .{});
+        return error.FailedToSetNonBlocking;
+    }
+
+    if (c.BIO_do_accept(bio) <= 0) {
+        c.BIO_free_all(bio);
+        std.debug.print("Failed to setup BIO for listening.\n", .{});
+        return error.FailedToSetupListening;
+    }
+
+    return bio;
+}
+
+fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
+    var ssl: ?*c.SSL = null;
+
+    var source_ip: []const u8 = undefined;
+    if (server_config.mode == .release) {
+        source_ip = logIp(client) catch "failed IP";
+    } else {
+        source_ip = "127.0.0.1";
+    }
+
+    if (server_config.mode == ServerModes.release) {
+        ssl = c.SSL_new(ctx);
+        c.SSL_set_bio(ssl, client, client);
+
+        while (true) {
+            const ret = c.SSL_accept(ssl);
+            const ssl_err = c.SSL_get_error(ssl, ret);
+
+            if (ret > 0) {
+                // std.debug.print("Passed SSL handshake.\n", .{});
+                break;
+            } else if (ssl_err == c.SSL_ERROR_WANT_READ or ssl_err == c.SSL_ERROR_WANT_WRITE) {
+                // std.debug.print("Waiting on SSL handshake.\n", .{});
+                _ = c.usleep(1000);
+                continue;
+            } else {
+                const err = c.ERR_get_error();
+                var errbuf: [256]u8 = [_]u8{0} ** 256;
+                c.ERR_error_string_n(err, &errbuf, errbuf.len);
+                // std.debug.print("Failed SSL handshake: {s}\n", .{errbuf[0..]});
+                return;
+            }
+        }
+    }
+
+    try handleClientRequest(client, ssl, source_ip);
+
+    if (ssl) |ssl_obj| {
+        if (c.SSL_shutdown(ssl_obj) == 0) {
+            _ = c.SSL_shutdown(ssl_obj);
+        }
+        c.SSL_free(ssl_obj);
     }
 }
 
 fn startServer() !void {
     const c_o = &server_config;
+
+    server_start_time = std.time.timestamp();
 
     if (c_o.mode == ServerModes.release) {
         server_config.mode = ServerModes.release;
@@ -622,34 +487,212 @@ fn startServer() !void {
         server_config.port = c_o.port;
     }
 
-    try initializeStaticRoutes();
+    file_server_instance = try file_server.FileServer.init(&allocator, "build/frontend");
 
     const ctx = try initializeServer();
     defer c.SSL_CTX_free(ctx);
-
     try loadCertificates(ctx);
 
     const socket = try bindAndListen();
     defer _ = c.BIO_free(socket);
 
-    while (running) {
-        if (c.BIO_do_accept(socket) <= 0) {
-            std.debug.print("Failed to accept.", .{});
-            continue;
-        }
+    const fd = c.BIO_get_fd(socket, null);
 
-        const client = c.BIO_pop(socket);
-        if (client == null) {
-            std.debug.print("Failed to pop client socket.\n", .{});
-        } else {
-            handleClientConnection(client.?, ctx) catch |err| {
-                std.debug.print("Error handling client connection: {}\n", .{err});
-            };
-        }
+    if (fd < 0) {
+        std.debug.print("Failed to get valid file descriptor from BIO socket. {d}\n", .{fd});
+        return;
     }
 
+    var poll_fds: [1]std.os.pollfd = [_]std.os.pollfd{.{ .revents = 0, .fd = @intCast(fd), .events = std.os.POLL.IN }};
+
+    while (running) {
+        if (try std.os.poll(&poll_fds, POLL_MS_TIMEOUT) > 0) {
+            if (c.BIO_do_accept(socket) > 0) {
+                if (c.BIO_pop(socket)) |client| {
+                    handleClientConnection(client, ctx) catch |err| {
+                        std.debug.print("Error handling client connection: {}\n", .{err});
+                    };
+                } else {
+                    std.debug.print("Failed to accept client.\n", .{});
+                }
+            }
+        }
+    }
     std.debug.print("\nShutting down...\n", .{});
 }
+
+// // Support multiple connections at a time, this had issues like double frees so I restarted from scratch, should be easy to get working
+// const Connection = struct { client_fd: ?i32, ssl: ?*c.SSL };
+// fn acceptNewConnection(listeningSocket: *c.BIO, ctx: *c.SSL_CTX) Connection {
+//     // Try to accept a new connection
+//     if (c.BIO_do_accept(listeningSocket) <= 0) {
+//         std.debug.print("Failed to accept new connection.\n", .{});
+//         return Connection{ .client_fd = null, .ssl = null };
+//     }
+
+//     const clientBIO = c.BIO_pop(listeningSocket);
+//     if (clientBIO == null) {
+//         std.debug.print("Failed to retrieve client BIO.\n", .{});
+//         return Connection{ .client_fd = null, .ssl = null };
+//     }
+
+//     var ssl: ?*c.SSL = null;
+
+//     if (server_config.mode == ServerModes.release) {
+//         ssl = c.SSL_new(ctx);
+//         if (ssl == null) {
+//             std.debug.print("Failed to create SSL object.\n", .{});
+//             return Connection{ .client_fd = null, .ssl = null };
+//         }
+
+//         c.SSL_set_bio(ssl, clientBIO, clientBIO);
+
+//         while (true) {
+//             const ret = c.SSL_accept(ssl);
+//             if (ret > 0) {
+//                 // SSL handshake was successful
+//                 std.debug.print("GOT SSL!!!\n", .{});
+//                 break; // Exit the loop
+//             } else {
+//                 const ssl_err = c.SSL_get_error(ssl, ret);
+//                 if (ssl_err == c.SSL_ERROR_WANT_READ or ssl_err == c.SSL_ERROR_WANT_WRITE) {
+//                     std.debug.print("WAITING!", .{});
+//                     _ = c.usleep(100000); // Sleep for 0.1 seconds to reduce CPU usage
+//                     continue; // Retry the operation
+//                 } else {
+//                     switch (ssl_err) {
+//                         c.SSL_ERROR_NONE => {
+//                             std.debug.print("SSL_ERROR_NONE", .{});
+//                         },
+//                         c.SSL_ERROR_ZERO_RETURN => {
+//                             std.debug.print("SSL_ERROR_ZERO_RETURN", .{});
+//                         },
+//                         c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => {
+//                             std.debug.print("SSL_ERROR_WANT_READ/WRITE", .{});
+//                         },
+//                         c.SSL_ERROR_WANT_CONNECT, c.SSL_ERROR_WANT_ACCEPT => {
+//                             std.debug.print("SSL_ERROR_WANT_CONNECT/ACCEPT", .{});
+//                         },
+//                         c.SSL_ERROR_SSL => {
+//                             std.debug.print("SSL_ERROR_SSL", .{});
+//                         },
+//                         else => {
+//                             std.debug.print("SSL_ERROR other", .{});
+//                         },
+//                     }
+//                     const err = c.ERR_get_error();
+//                     var errbuf: [256]u8 = undefined;
+//                     c.ERR_error_string_n(err, &errbuf, errbuf.len);
+//                     std.debug.print("Failed SSL handshake: {s}\n", .{errbuf[0..]});
+//                     return Connection{ .client_fd = null, .ssl = null };
+//                 }
+//             }
+//         }
+//     }
+
+//     const client_fd: i32 = @intCast(c.BIO_get_fd(clientBIO, null));
+//     if (client_fd < 0) {
+//         std.debug.print("Failed to get file descriptor from BIO.\n", .{});
+//         return Connection{ .client_fd = null, .ssl = null };
+//     }
+
+//     return Connection{ .client_fd = @intCast(client_fd), .ssl = ssl };
+// }
+
+// fn handleClientConnection(client_fd: i32, ssl: ?*c.SSL) !void {
+//     const clientBIO = c.BIO_new_socket(client_fd, c.BIO_NOCLOSE) orelse return;
+//    // defer _ = c.BIO_free(clientBIO);
+
+//     const source_ip = logIp(clientBIO) catch return;
+
+//     try handleClientRequest(clientBIO, ssl, source_ip);
+// }
+
+// fn startServer() !void {
+//     const c_o = &server_config;
+
+//     if (c_o.mode == ServerModes.release) {
+//         server_config.mode = ServerModes.release;
+//         server_config.port = "443";
+//         std.log.info("In release mode! mode: {any}, port: {s}\n", .{ server_config.mode, server_config.port });
+//     } else {
+//         server_config.mode = ServerModes.debug;
+//         server_config.port = c_o.port;
+//     }
+
+//     file_server_instance = try file_server.FileServer.init(&allocator, "build/frontend");
+
+//     const ctx = try initializeServer();
+//     defer c.SSL_CTX_free(ctx);
+//     try loadCertificates(ctx);
+
+//     const socket = try bindAndListen();
+//     defer _ = c.BIO_free(socket);
+
+//     const fd = c.BIO_get_fd(socket, null);
+
+//     if (fd < 0) {
+//         std.debug.print("Failed to get valid file descriptor from BIO socket. {d}\n", .{fd});
+//         return;
+//     }
+
+//     var poll_fds: [256]std.os.pollfd = undefined;
+//     var num_fds: usize = 1;
+//     poll_fds[0] = std.os.pollfd{ .fd = @intCast(fd), .events = std.os.POLL.IN, .revents = 0 };
+
+//     var ssls: [256]?*c.SSL = [_]?*c.SSL{null} ** 256;
+
+//     while (running) {
+//         const n = try std.os.poll(poll_fds[0..num_fds], POLL_MS_TIMEOUT);
+//         if (n == 0) {
+//             // Timeout occurred
+//             continue;
+//         } else if (n < 0) {
+//             std.debug.print("poll() error: {}\n", .{std.os.errno()});
+//             break;
+//         }
+
+//         if (poll_fds[0].revents & std.os.POLL.IN > 0) {
+//             const res = acceptNewConnection(socket, ctx);
+//             const client_fd = res.client_fd;
+//             if (client_fd != null) {
+//                 ssls[num_fds] = res.ssl;
+//                 poll_fds[num_fds] = std.os.pollfd{ .fd = client_fd.?, .events = std.os.POLL.IN, .revents = 0 };
+
+//                 num_fds += 1;
+//             }
+//         }
+
+//         for (poll_fds[1..num_fds], 1..) |*pfd, i| {
+//             if (pfd.revents & std.os.POLL.IN > 0) {
+//                 try handleClientConnection(pfd.fd, ssls[i]);
+//             }
+
+//             if (pfd.revents & (std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL) > 0) {
+//                 if (ssls[i]) |ssl_obj| {
+//                     if (c.SSL_shutdown(ssl_obj) == 0) {
+//                         _ = c.SSL_shutdown(ssl_obj); // Complete the bidirectional shutdown if necessary
+//                     }
+//                     c.SSL_free(ssl_obj); // This also closes the socket
+//                     ssls[i] = null;
+//                 }
+
+//                 var found: bool = false;
+//                 for (poll_fds[0..num_fds], 0..) |*curr_pfd, index| {
+//                     if (found) {
+//                         poll_fds[index - 1] = poll_fds[index];
+//                     } else if (curr_pfd.fd == pfd.fd) {
+//                         found = true;
+//                     }
+//                 }
+//                 if (found) {
+//                     num_fds -= 1;
+//                 }
+//             }
+//         }
+//     }
+//     std.debug.print("\nShutting down...\n", .{});
+// }
 
 pub fn main() !void {
     const sigintHandlerPtr = @as(fn (c_int) callconv(.C) void, handleExitSignal);
@@ -657,8 +700,6 @@ pub fn main() !void {
 
     _ = c.signal(c.SIGINT, sigintHandlerPtr);
     _ = c.signal(c.SIGTERM, sigtermHandlerPtr);
-
-    defer routeToFileMap.deinit();
 
     return cli.run(app, allocator);
 }

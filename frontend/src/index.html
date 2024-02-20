@@ -8,6 +8,7 @@
   <meta name="description" content="Much Todo About Nothing will be a modern, feature-rich note-taking / todo list web application.">
   <link rel="icon" href="./assets/favicon.svg" media="(prefers-color-scheme: light)">
   <link rel="icon" href="./assets/favicon-dark.svg" media="(prefers-color-scheme: dark)">
+  <link rel=”mask-icon” href="./assets/favicon.svg" color="#000000">
   <link rel="stylesheet" href="app.css">
 
   <script defer src="components/defs.js"></script>
@@ -38,9 +39,8 @@
     <div class="inner-footer">
       <div class="column">
         <p class="" style="color: var(--textdanger); font-weight: 500;">All content is public.</p>
-        <p>Recieved <span id="unique-visitors"></span> <span class="no-break">unique visitors.</span></p>
-        <p>Processed <span id="page-views"></span> <span class="no-break">HTTP requests.</spans>
-        </p>
+        <p>Processed <span class="footerStatValue" id="request-count"></span> <span class="no-break">HTTP requests.</spans></p>
+        <p>Online for<span class="footerStatValue" id="online-time"></span><span class="no-break">.</span></p>
       </div>
       <div class="column">
         <p class="">Open source <span class="no-break">on <a
@@ -198,7 +198,7 @@
     display: grid;
     grid: auto-flow / repeat(2, 1fr);
     column-gap: 20px;
-    min-height: 78px;
+    min-height: 52px;
 
   }
 
@@ -216,6 +216,10 @@
     justify-content: end;
   }
 
+  footer .column:first-child {
+    justify-content: flex-start;
+  }
+
   footer .column:nth-child(2) {
     align-items: end;
   }
@@ -224,9 +228,7 @@
     text-align: right;
   }
 
-
-  #unique-visitors,
-  #page-views {
+  .footerStatValue {
     font-weight: 599;
   }
 </style>

@@ -8,7 +8,7 @@
     srcset="https://github.com/typio/much-todo/assets/26017543/3c394546-58fb-4efc-96fb-bb3124d0ccb7"
   />
   <img
-    alt="github contribution grid snake animation"
+    alt="much todo logo"
     width="56"
     src="https://github.com/typio/much-todo/assets/26017543/3c394546-58fb-4efc-96fb-bb3124d0ccb7"
   />

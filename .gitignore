@@ -5,7 +5,7 @@ server.crt
 server.key
 
 .env
-client_ips.log
+http-server.log
 db.json
 
 deps/

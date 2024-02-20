@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = std.builtin.OptimizeMode.ReleaseSafe });
 
     const exe = b.addExecutable(.{
         .name = "http-server",
@@ -22,7 +22,8 @@ pub fn build(b: *std.Build) void {
         exe.addLibraryPath(.{ .path = "/opt/homebrew/Cellar/openssl@3/3.1.4/lib" });
     }
 
-    exe.linkSystemLibrary("c");
+    exe.linkLibC();
+    // exe.linkSystemLibrary("c");
     exe.linkSystemLibrary("ssl");
     exe.linkSystemLibrary("crypto");
 

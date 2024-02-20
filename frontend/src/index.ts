@@ -73,17 +73,41 @@ window.onload = () => {
 
   getNotes()
 
-  fetch("/api/viewCount")
+  fetch("/api/httpServer")
     .then(response => response.json())
     .then(data => {
-      const pageViewCountElement = document.getElementById('page-views');
-      const uniqueVisitorCountElement = document.getElementById('unique-visitors');
-      if (pageViewCountElement && uniqueVisitorCountElement) {
-        pageViewCountElement.innerText = data.view_count ?? '';
-        uniqueVisitorCountElement.innerText = data.unique_ip_count ?? '';
+      const requestCountElement = document.getElementById('request-count');
+      const onlineTimeElement = document.getElementById('online-time');
+
+      if (requestCountElement && onlineTimeElement) {
+        requestCountElement.innerText = data.request_count ?? '';
+
+        setOnlineTimeText(data.server_start_timestamp * 1000, onlineTimeElement);
       }
     })
     .catch(error => {
       console.error("Error fetching view data:", error);
     });
+}
+
+const setOnlineTimeText = (timeMs: number, el: HTMLElement) => {
+  const differenceMs = new Date().getTime() - timeMs
+
+  const days = Math.floor(differenceMs / (1000 * 60 * 60 * 24))
+  const hours = Math.floor(differenceMs / (1000 * 60 * 60)) % 24
+  const minutes = Math.floor(differenceMs / (1000 * 60)) % 60
+  const seconds = Math.floor(differenceMs / (1000)) % 60
+
+  if (days > 0) {
+    el.innerText = ` ${days} day${days > 1 ? 's' : ''}${hours > 0 ? ` and ${hours} hour${hours > 1 ? 's' : ''}` : ''}`
+  } else if (hours > 0) {
+    el.innerText = ` ${hours} hour${hours > 1 ? 's' : ''}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? 's' : ''}` : ''}`
+  } else if (minutes > 0) {
+    el.innerText = ` ${minutes} minute${minutes > 1 ? 's' : ''}${seconds > 0 ? ` and ${seconds} second${seconds > 1 ? 's' : ''}` : ''}`
+  } else {
+    el.innerText = ` ${seconds} second${seconds > 1 ? 's' : ''}`
+  }
+  setTimeout(() => {
+    setOnlineTimeText(timeMs, el)
+  }, days + hours === 0 ? 333 : days === 0 ? 20 * 1000 : 20 * 60 * 1000)
 }

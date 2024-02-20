@@ -14,9 +14,7 @@ const lastEditText = (edited, lastEdit = new Date()) => {
     lastEdit?.getMonth() === new Date().getMonth() &&
     lastEdit?.getFullYear() === new Date().getFullYear();
 
-  const sameYear = lastEdit?.getDate() === new Date().getDate() &&
-    lastEdit?.getMonth() === new Date().getMonth() &&
-    lastEdit?.getFullYear() === new Date().getFullYear();
+  const sameYear = lastEdit?.getFullYear() === new Date().getFullYear();
 
   const timestampString = sameDay ? lastEdit.toLocaleTimeString(undefined, { minute: 'numeric', hour: 'numeric' }) : sameYear ? lastEdit.toLocaleString(undefined, { month: 'short', day: 'numeric' }) : lastEdit.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 
