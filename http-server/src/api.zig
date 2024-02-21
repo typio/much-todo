@@ -3,28 +3,36 @@ const std = @import("std");
 const main = @import("./main.zig");
 
 pub fn handleRequest(allocator: *const std.mem.Allocator, request: main.HTTPRequest) !?main.ResponseBuffers {
-    if (request.head.method == .GET) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes")) {
-            return try getNotes(allocator.*, request.source_ip);
-        } else if (std.mem.eql(u8, request.head.path, "/api/httpServer")) {
-            return try getHttpServerStats(allocator.*);
-        }
-    } else if (request.head.method == .POST) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes")) {
-            return try postNote(allocator.*, request.source_ip, request.body);
-        }
-    } else if (request.head.method == .PUT) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
-            return try voteOnNote(allocator.*, request.source_ip, request.body);
-        }
-    } else if (request.head.method == .PATCH) {
-        if (std.mem.eql(u8, request.head.path, "/api/notes/edit/body")) {
-            return try editNoteBody(allocator.*, request.source_ip, request.body);
-        }
-    } else if (request.head.method == .DELETE) {
-        return try deleteNote(allocator.*, request.source_ip, request.body);
+    switch (request.head.method) {
+        .HEAD => {},
+        .GET => {
+            if (std.mem.eql(u8, request.head.path, "/api/notes")) {
+                return try getNotes(allocator.*, request.source_ip);
+            } else if (std.mem.eql(u8, request.head.path, "/api/httpServer")) {
+                return try getHttpServerStats(allocator.*);
+            }
+        },
+        .POST => {
+            if (std.mem.eql(u8, request.head.path, "/api/notes")) {
+                return try postNote(allocator.*, request.source_ip, request.body);
+            }
+        },
+        .PUT => {
+            if (std.mem.eql(u8, request.head.path, "/api/notes/vote")) {
+                return try voteOnNote(allocator.*, request.source_ip, request.body);
+            }
+        },
+        .PATCH => {
+            if (std.mem.eql(u8, request.head.path, "/api/notes/edit/body")) {
+                return try editNoteBody(allocator.*, request.source_ip, request.body);
+            }
+        },
+        .DELETE => {
+            if (std.mem.eql(u8, request.head.path, "/api/notes")) {
+                return try deleteNote(allocator.*, request.source_ip, request.body);
+            }
+        },
     }
-
     std.log.info("Unsupported request method: {?}, on path: {s}", .{ request.head.method, request.head.path });
     return null;
 }

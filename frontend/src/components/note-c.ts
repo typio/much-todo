@@ -43,7 +43,7 @@ class Note extends HTMLElement {
     if (this.shadowRoot === null) return
 
     const noteId = this.getAttribute('noteid');
-    const body = this.getAttribute('body')?.replace(/\n/g, '<br>');
+    const body = this.getAttribute('body')//?.replace(/\n/g, '<br>');
     let userVote = Number(this.getAttribute('userVote'));
     const voteCount = (Number(this.getAttribute('votes')) ?? 0);
     const isUser = this.getAttribute('isuser') === 'true';
