@@ -12,6 +12,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const options = b.addOptions();
+    options.addOption(bool, "production_build", target.result.os.tag == std.Target.Os.Tag.linux);
+    exe.root_module.addOptions("config", options);
+
     if (target.result.os.tag == std.Target.Os.Tag.linux) {
         // linux x86_64 openssl
         exe.addIncludePath(.{ .path = "deps/linux_deps/include" });

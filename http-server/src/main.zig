@@ -1,9 +1,17 @@
+const config = @import("config");
 const std = @import("std");
+const os = std.os;
+const net = std.net;
+const fs = std.fs;
+const fmt = std.fmt;
+const Allocator = std.mem.Allocator;
+const io = std.io;
 
 const cli = @import("zig-cli");
 
 const c = @cImport({
     @cInclude("unistd.h");
+    @cInclude("signal.h");
 
     @cInclude("arpa/inet.h");
 
@@ -74,7 +82,7 @@ pub const API_RESPONSE_BUFFER_SIZE = 256 * 1024;
 pub const FILE_SERVE_BUFFER_SIZE = 2000 * 1024;
 
 const MAX_POLL_ATTEMPTS = 10;
-const POLL_MS_TIMEOUT = 1000;
+const POLL_MS_TIMEOUT = 100;
 
 pub fn handleExitSignal(signum: c_int) callconv(.C) void {
     switch (signum) {
@@ -105,22 +113,15 @@ fn initializeServer() !*c.SSL_CTX {
 fn loadCertificates(ctx: *c.SSL_CTX) !void {
     if (server_config.mode != ServerModes.release) return;
 
-    // TODO: set this programatically
-    // remote linux server
-    if (c.SSL_CTX_use_certificate_file(ctx, "/etc/letsencrypt/live/muchtodo.app/fullchain.pem", c.SSL_FILETYPE_PEM) <= 0 or
-        c.SSL_CTX_use_PrivateKey_file(ctx, "/etc/letsencrypt/live/muchtodo.app/privkey.pem", c.SSL_FILETYPE_PEM) <= 0)
+    const cert_file_path: [*c]const u8 = if (config.production_build) "/etc/letsencrypt/live/muchtodo.app/fullchain.pem" else "build/cert.pem";
+    const private_key_file_path: [*c]const u8 = if (config.production_build) "/etc/letsencrypt/live/muchtodo.app/privkey.pem" else "build/key.pem";
+
+    if (c.SSL_CTX_use_certificate_file(ctx, cert_file_path, c.SSL_FILETYPE_PEM) <= 0 or
+        c.SSL_CTX_use_PrivateKey_file(ctx, private_key_file_path, c.SSL_FILETYPE_PEM) <= 0)
     {
         std.debug.print("Failed to load certificate or key.\n", .{});
         return;
     }
-
-    // local machine
-    // if (c.SSL_CTX_use_certificate_file(ctx, "build/cert.pem", c.SSL_FILETYPE_PEM) <= 0 or
-    //     c.SSL_CTX_use_PrivateKey_file(ctx, "build/key.pem", c.SSL_FILETYPE_PEM) <= 0)
-    // {
-    //     std.debug.print("Failed to load certificate or key.\n", .{});
-    //     return;
-    // }
 }
 
 fn logIp(client: *c.BIO) ![]const u8 {
@@ -135,52 +136,53 @@ fn logIp(client: *c.BIO) ![]const u8 {
 
     try file.writeAll(try std.fmt.allocPrint(allocator, "{d}\n{d}", .{ request_count + 1, server_start_time }));
 
-    if (server_config.mode == ServerModes.debug) return "127.0.0.1";
-
     var ip_string: ?[]const u8 = null;
 
-    const client_fd: c_int = @intCast(c.BIO_get_fd(client, null));
-    var client_addr: c.struct_sockaddr = .{};
+    if (server_config.mode == ServerModes.debug) {
+        ip_string = "127.0.0.1";
+    } else {
+        const client_fd: c_int = @intCast(c.BIO_get_fd(client, null));
+        var client_addr: c.struct_sockaddr = .{};
 
-    // can't use struct_sockaddr_storage bc of getpeername type checking
-    var client_addr_len: std.os.socklen_t = @sizeOf(c.struct_sockaddr);
-    if (c.getpeername(client_fd, &client_addr, &client_addr_len) < 0) {
-        std.log.err("didn't get IP\n", .{});
+        // can't use struct_sockaddr_storage bc of getpeername type checking
+        var client_addr_len: std.os.socklen_t = @sizeOf(c.struct_sockaddr);
+        if (c.getpeername(client_fd, &client_addr, &client_addr_len) < 0) {
+            std.log.err("didn't get IP\n", .{});
+        }
+
+        const family = client_addr.sa_family;
+
+        const struct_sockaddr_in = packed struct { // corresponds to c.struct_sockaddr_in
+            sin_family: i16, // c.sa_family_t, is a short
+            sin_port: u16, // u short
+            sin_addr: u32, // struct {
+            //     s_addr: u long,
+            // },
+            sin_zero: u64, // 8 bytes of padding
+        };
+
+        switch (family) {
+            c.AF_INET => {
+                const ca: *struct_sockaddr_in = @ptrCast(@alignCast(&client_addr));
+
+                var in_addr: c.in_addr_t = ca.sin_addr;
+                const in_addr_struct: *c.struct_in_addr = @ptrCast(@alignCast(&in_addr));
+                const ip: [*c]const u8 = c.inet_ntoa(in_addr_struct.*);
+
+                ip_string = try allocator.dupe(u8, std.mem.span(ip));
+            },
+            c.AF_INET6 => {
+                // We don't support this rn
+                return error.UnsupportedAddressFamily;
+            },
+            else => {
+                std.log.err("Unknown address family: {d}\n", .{family});
+                return error.UnsupportedAddressFamily;
+            },
+        }
+
+        ip_string = ip_string orelse try std.fmt.allocPrint(allocator, "{s}", .{"no ip!"});
     }
-
-    const family = client_addr.sa_family;
-
-    const struct_sockaddr_in = packed struct { // corresponds to c.struct_sockaddr_in
-        sin_family: i16, // c.sa_family_t, is a short
-        sin_port: u16, // u short
-        sin_addr: u32, // struct {
-        //     s_addr: u long,
-        // },
-        sin_zero: u64, // 8 bytes of padding
-    };
-
-    switch (family) {
-        c.AF_INET => {
-            const ca: *struct_sockaddr_in = @ptrCast(@alignCast(&client_addr));
-
-            var in_addr: c.in_addr_t = ca.sin_addr;
-            const in_addr_struct: *c.struct_in_addr = @ptrCast(@alignCast(&in_addr));
-            const ip: [*c]const u8 = c.inet_ntoa(in_addr_struct.*);
-
-            ip_string = try std.fmt.allocPrint(allocator, "{s}", .{ip});
-        },
-        c.AF_INET6 => {
-            // We don't support this rn
-            return error.UnsupportedAddressFamily;
-        },
-        else => {
-            std.log.err("Unknown address family: {d}\n", .{family});
-            return error.UnsupportedAddressFamily;
-        },
-    }
-
-    ip_string = ip_string orelse try std.fmt.allocPrint(allocator, "{s}", .{"no ip!"});
-
     std.debug.print("IP: {s} connected.\n", .{ip_string.?});
 
     return ip_string.?;
@@ -194,7 +196,7 @@ fn parseHead(head: []const u8) !HTTPHead {
     var start_line_parts = std.mem.splitScalar(u8, first_line, ' ');
 
     const method = std.meta.stringToEnum(HTTPMethod, start_line_parts.next() orelse return error.MalformedRequest) orelse return error.MalformedRequest;
-    const path = start_line_parts.next() orelse return error.MalformedRequest;
+    const path = try allocator.dupe(u8, start_line_parts.next() orelse return error.MalformedRequest);
 
     var content_length: u16 = 0;
     while (head_lines.next()) |line| {
@@ -217,10 +219,7 @@ fn parseHead(head: []const u8) !HTTPHead {
 
 fn handleClientRequest(client: *c.BIO, ssl: ?*c.SSL, source_ip: []const u8) !void {
     var request_head: ?HTTPHead = null;
-    var request_body: ?[]const u8 = null;
-
-    var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = [_]u8{0} ** USER_REQUEST_BUFFER_SIZE;
-    var total_read: usize = 0;
+    var request_body: []const u8 = "";
 
     const fd = switch (server_config.mode) {
         ServerModes.release => c.SSL_get_fd(ssl.?),
@@ -231,74 +230,58 @@ fn handleClientRequest(client: *c.BIO, ssl: ?*c.SSL, source_ip: []const u8) !voi
 
     var poll_fds: [1]std.os.pollfd = [_]std.os.pollfd{.{ .revents = 0, .fd = @intCast(fd), .events = std.os.POLL.IN }};
 
+    var read_head = false;
+
     while (true) {
+        var buffer: [USER_REQUEST_BUFFER_SIZE]u8 = [_]u8{0} ** USER_REQUEST_BUFFER_SIZE;
+
         const n = try std.os.poll(&poll_fds, POLL_MS_TIMEOUT);
         if (n > 0 and (poll_fds[0].revents & std.os.POLL.IN) != 0) {
             const read_result = switch (server_config.mode) {
-                ServerModes.release => c.SSL_read(ssl, &buffer, @intCast(buffer.len - total_read)),
-                else => c.BIO_read(client, &buffer, @intCast(buffer.len - total_read)),
+                ServerModes.release => c.SSL_read(ssl, &buffer, @intCast(buffer.len)),
+                else => c.BIO_read(client, &buffer, @intCast(buffer.len)),
             };
 
+            // TODO: Not technically correct.
+            // Head does not have to be entirely in the first packet, move to a streaming in buffer approach
+            // "Read" until /r/n/r/n or if that's found; parse head and read until content-length
+            // Maintain full request buffer by concating each read
             if (read_result > 0) {
-                total_read += @intCast(read_result);
-
-                const initial_read = buffer[0..@as(usize, @intCast(total_read))];
-
-                var request_parts = std.mem.splitSequence(u8, initial_read, "\r\n\r\n");
-                request_head = parseHead(request_parts.next() orelse return error.MalformedRequest) catch return error.MalformedRequest;
-
-                request_body = request_parts.next() orelse "";
-
-                // If the Content-Length header indicates more data, attempt to read more
-                if (request_head.?.content_length > request_body.?.len) {
-                    // Calculate remaining bytes to read
-                    var remaining_bytes = request_head.?.content_length - @as(u16, @intCast(request_body.?.len));
-                    var total_read_bytes = request_body.?.len;
-                    while (remaining_bytes > 0) {
-                        std.debug.print("Remaining {d} of {d}\n", .{ remaining_bytes, total_read_bytes });
-                        var read_buffer: [USER_REQUEST_BUFFER_SIZE]u8 = [_]u8{0} ** USER_REQUEST_BUFFER_SIZE;
-                        const body_bytes_read = switch (server_config.mode) {
-                            ServerModes.release => c.SSL_read(ssl, &read_buffer, remaining_bytes),
-                            else => c.BIO_read(client, &read_buffer, remaining_bytes),
-                        };
-                        if (body_bytes_read <= 0) {
-                            std.debug.print("Failed to read remaining body bytes.\n", .{});
-                            return;
-                        }
-                        // Append read bytes to request body
-                        request_body.? = try std.mem.concat(allocator, u8, &[_][]const u8{ request_body.?, read_buffer[0..@as(usize, @intCast(body_bytes_read))] });
-                        remaining_bytes -= @as(u16, @intCast(body_bytes_read));
-                        total_read_bytes += @as(usize, @intCast(body_bytes_read));
-                        if (total_read_bytes > USER_REQUEST_BUFFER_SIZE) {
-                            std.debug.print("Request body exceeds buffer size.\n", .{});
-                            return;
-                        }
-                    }
+                if (!read_head) {
+                    var request_parts = std.mem.splitSequence(u8, buffer[0..@intCast(read_result)], "\r\n\r\n");
+                    request_head = parseHead(request_parts.first()) catch return error.MalformedRequest;
+                    request_body = request_parts.next() orelse "";
+                    read_head = true;
                 } else {
+                    request_body = try std.mem.concat(allocator, u8, &[_][]const u8{ request_body, buffer[0..@intCast(read_result)] });
+                }
+
+                if (request_body.len >= request_head.?.content_length) {
                     break;
                 }
             } else if (read_result == 0) {
-                // std.debug.print("Connection closed by peer.\n", .{});
+                std.debug.print("Connection closed by peer.\n", .{});
                 return;
             } else {
-                break;
+                std.debug.print("Error reading? Read negative bytes.\n", .{});
+                return;
             }
         } else if (n == 0) {
             attempts += 1;
-            std.debug.print("Write timeout, attempt {d} of {d}.\n", .{ attempts, MAX_POLL_ATTEMPTS });
+            std.debug.print("Read timeout, attempt {d} of {d}.\n", .{ attempts, MAX_POLL_ATTEMPTS });
             if (attempts >= MAX_POLL_ATTEMPTS) {
                 std.debug.print("Max read attempts reached, giving up.\n", .{});
                 return;
             }
         } else {
-            std.debug.print("Error during write poll.\n", .{});
+            std.debug.print("Error during read poll.\n", .{});
             return;
         }
     }
 
-    if (request_head != null and request_body != null) {
-        const httpRequest = HTTPRequest{ .head = request_head.?, .body = request_body.?, .source_ip = source_ip };
-        try parseRequest(httpRequest, client, ssl);
+    if (request_head != null) {
+        const httpRequest = HTTPRequest{ .head = request_head.?, .body = request_body, .source_ip = source_ip };
+        parseRequest(httpRequest, client, ssl) catch return error.FailedToParseRequest;
     }
 }
 
@@ -425,7 +408,7 @@ fn handleClientConnection(client: *c.BIO, ctx: *c.SSL_CTX) !void {
 
     var source_ip: []const u8 = undefined;
     if (server_config.mode == .release) {
-        source_ip = logIp(client) catch "failed IP";
+        source_ip = logIp(client) catch "failed to log IP";
     } else {
         source_ip = "127.0.0.1";
     }

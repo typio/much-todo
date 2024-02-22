@@ -1,36 +1,94 @@
-const maxNoteBodyWidth = Math.min(420, window.innerWidth - 96)
-const minNoteBodyWidth = 160
+const maxNoteBodyWidth = Math.min(420, window.innerWidth - 96);
+const minNoteBodyWidth = 160;
 
-const loadingIcon = () => html`<svg width='20px' height='20px'>
-<circle cx="10" cy="10" r="8" fill="none" stroke="var(--primarydark)" stroke-width="3" />
-<circle cx="10" cy="10" r="8" fill="none" stroke="var(--textdark)" stroke-width="3" stroke-dasharray="${8 * 2 * Math.PI * .666}" style="
+const loadingIcon = () =>
+  html`<svg width="20px" height="20px">
+    <circle
+      cx="10"
+      cy="10"
+      r="8"
+      fill="none"
+      stroke="var(--primarydark)"
+      stroke-width="3"
+    />
+    <circle
+      cx="10"
+      cy="10"
+      r="8"
+      fill="none"
+      stroke="var(--textdark)"
+      stroke-width="3"
+      stroke-dasharray="${8 * 2 * Math.PI * 0.666}"
+      style="
   animation: rotating 1s linear infinite;
-  transform-origin: center;" 
-/>
-</svg>`
+  transform-origin: center;"
+    />
+  </svg>`;
 
-const lastEditText = (edited, lastEdit = new Date()) => {
-  const sameDay = lastEdit?.getDate() === new Date().getDate() &&
+const lastEditText = (edited: boolean, lastEdit = new Date()) => {
+  const MS_IN_HOUR = 1000 * 60 * 60;
+  const MS_IN_DAY = MS_IN_HOUR * 24;
+  const MS_IN_WEEK = MS_IN_DAY * 7;
+  const ms_since_edit = new Date().getTime() - lastEdit?.getTime();
+
+  const sameDate =
+    lastEdit?.getDate() === new Date().getDate() &&
     lastEdit?.getMonth() === new Date().getMonth() &&
     lastEdit?.getFullYear() === new Date().getFullYear();
 
-  const sameYear = lastEdit?.getFullYear() === new Date().getFullYear();
+  const sameDayInterval = ms_since_edit < MS_IN_DAY;
 
-  const timestampString = sameDay ? lastEdit.toLocaleTimeString(undefined, { minute: 'numeric', hour: 'numeric' }) : sameYear ? lastEdit.toLocaleString(undefined, { month: 'short', day: 'numeric' }) : lastEdit.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  const sameWeekInterval = ms_since_edit < MS_IN_WEEK;
 
-  return html`<p class="last-edit-text">${edited ? 'Edited' : 'Created'} ${timestampString}</p>`
-}
+  const sameYearDate = lastEdit?.getFullYear() === new Date().getFullYear();
+
+  const timestampString = sameDate
+    ? lastEdit.toLocaleTimeString(undefined, {
+        minute: "numeric",
+        hour: "numeric",
+      })
+    : sameDayInterval
+      ? ((h) => `${h} hour{d > 1 ? "s" : ""} ago`)(
+          Math.floor(ms_since_edit / MS_IN_HOUR),
+        )
+      : sameWeekInterval
+        ? ((d) => `${d} day${d > 1 ? "s" : ""} ago`)(
+            Math.floor(ms_since_edit / MS_IN_DAY),
+          )
+        : sameYearDate
+          ? lastEdit.toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+            })
+          : lastEdit.toLocaleString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            });
+
+  return html`<p class="last-edit-text">
+    ${edited ? "Edited" : "Created"} ${timestampString}
+  </p>`;
+};
 class Note extends HTMLElement {
-  localVote = 0
-  isEditing = false
+  localVote = 0;
+  isEditing = false;
 
   static get observedAttributes() {
-    return ['body', 'noteid', 'uservote', 'isuser', 'votes', 'edited', 'lastedit'];
+    return [
+      "body",
+      "noteid",
+      "uservote",
+      "isuser",
+      "votes",
+      "edited",
+      "lastedit",
+    ];
   }
 
   constructor() {
     super();
-    this.attachShadow({ mode: 'open' });
+    this.attachShadow({ mode: "open" });
   }
 
   // attributeChangedCallback(name, oldValue, newValue) {
@@ -40,52 +98,82 @@ class Note extends HTMLElement {
   // }
 
   render() {
-    if (this.shadowRoot === null) return
+    if (this.shadowRoot === null) return;
 
-    const noteId = this.getAttribute('noteid');
-    const body = this.getAttribute('body')//?.replace(/\n/g, '<br>');
-    let userVote = Number(this.getAttribute('userVote'));
-    const voteCount = (Number(this.getAttribute('votes')) ?? 0);
-    const isUser = this.getAttribute('isuser') === 'true';
+    const noteId = this.getAttribute("noteid");
+    const body = this.getAttribute("body"); //?.replace(/\n/g, '<br>');
+    let userVote = Number(this.getAttribute("userVote"));
+    const voteCount = Number(this.getAttribute("votes")) ?? 0;
+    const isUser = this.getAttribute("isuser") === "true";
 
-    const edited = this.getAttribute('edited') === 'true'
+    const edited = this.getAttribute("edited") === "true";
 
-    const lastEdit = ((d) => d ? new Date(Number(d)) : new Date())(this.getAttribute('lastedit'))
+    const lastEdit = ((d) => (d ? new Date(Number(d)) : new Date()))(
+      this.getAttribute("lastedit"),
+    );
 
-    let displayVote = voteCount
+    let displayVote = voteCount;
 
     if (this.localVote === 1) {
-      if (userVote === 1) { userVote = 0; displayVote-- }
-      else if (userVote === -1) { userVote = 1; displayVote += 2 }
-      else { userVote = this.localVote; displayVote++ }
+      if (userVote === 1) {
+        userVote = 0;
+        displayVote--;
+      } else if (userVote === -1) {
+        userVote = 1;
+        displayVote += 2;
+      } else {
+        userVote = this.localVote;
+        displayVote++;
+      }
     } else if (this.localVote === -1) {
-      if (userVote === 1) { userVote = -1; displayVote -= 2 }
-      else if (userVote === -1) { userVote = 0; displayVote++ }
-      else { userVote = this.localVote; displayVote-- }
+      if (userVote === 1) {
+        userVote = -1;
+        displayVote -= 2;
+      } else if (userVote === -1) {
+        userVote = 0;
+        displayVote++;
+      } else {
+        userVote = this.localVote;
+        displayVote--;
+      }
     }
-    // FIXME: Partially incorrect behavior after multiple local votes, because userVote changes are't persisted 
+    // FIXME: Partially incorrect behavior after multiple local votes, because userVote changes are't persisted
 
     this.shadowRoot.innerHTML = html`
       <div class="note">
-        ${isUser ?
-        html`<button aria-label="delete note" id="delete-${noteId}" class="note-delete-btn">✖</button>` :
-        html``
-      }
-        <textarea class="note-body" id="note-body" ${isUser ? '' : 'readonly'}>${body}</textarea>
+        ${isUser
+          ? html`<button
+              aria-label="delete note"
+              id="delete-${noteId}"
+              class="note-delete-btn"
+            >
+              ✖
+            </button>`
+          : html``}
+        <textarea class="note-body" id="note-body" ${isUser ? "" : "readonly"}>
+${body}</textarea
+        >
         <div class="bottom-row">
           <span id="bottom-row-left">${lastEditText(edited, lastEdit)}</span>
           <div class="bottom-row-right">
-        ${displayVote != 0 ?
-        html`<p class="vote-tally">${displayVote}</p>` :
-        html``
-      }
-          <button aria-label="like note" class="vote-btn" id="vote-up-btn">
-          <div class="like-icon-container">${userVote === 1 ? activeLikeIconSVG : likeIconSVG}</div>
-          </button>
-          <button aria-label="dislike note" class="vote-btn" id="vote-down-btn">
-          <div class="like-icon-container">${userVote === -1 ? activeDislikeIconSVG : dislikeIconSVG}</div>
-        </button>
-        </div>
+            ${displayVote != 0
+              ? html`<p class="vote-tally">${displayVote}</p>`
+              : html``}
+            <button aria-label="like note" class="vote-btn" id="vote-up-btn">
+              <div class="like-icon-container">
+                ${userVote === 1 ? activeLikeIconSVG : likeIconSVG}
+              </div>
+            </button>
+            <button
+              aria-label="dislike note"
+              class="vote-btn"
+              id="vote-down-btn"
+            >
+              <div class="like-icon-container">
+                ${userVote === -1 ? activeDislikeIconSVG : dislikeIconSVG}
+              </div>
+            </button>
+          </div>
         </div>
       </div>
       <style>
@@ -114,7 +202,7 @@ class Note extends HTMLElement {
           height: 44px;
           right: 0px;
           top: 0px;
-          padding:0;
+          padding: 0;
           background: none;
           border: none;
           color: var(--text);
@@ -145,14 +233,14 @@ class Note extends HTMLElement {
           flex-direction: row;
           margin-top: 4px;
           justify-content: space-between;
-          align-items:center;
+          align-items: center;
           margin-right: 0px;
         }
 
         .bottom-row-right {
           display: flex;
           flex-direction: row;
-          align-items:center;
+          align-items: center;
         }
 
         .last-edit-text {
@@ -170,10 +258,10 @@ class Note extends HTMLElement {
         .vote-btn {
           background: none;
           border: none;
-          padding:0;
+          padding: 0;
           height: 30px;
           width: 30px;
-          display:flex;
+          display: flex;
           justify-content: center;
           align-items: center;
           font-size: 1.1rem;
@@ -188,7 +276,7 @@ class Note extends HTMLElement {
         .vote-btn:hover {
           opacity: 1;
         }
-    </style>
+      </style>
     `;
 
     this.addEventListeners(noteId);
@@ -196,74 +284,88 @@ class Note extends HTMLElement {
   }
 
   adjustTextareaSize(noteId) {
-    const textarea = this.shadowRoot?.getElementById('note-body') as HTMLTextAreaElement;
-    const bottomLeft = this.shadowRoot?.getElementById('bottom-row-left') as HTMLSpanElement
+    const textarea = this.shadowRoot?.getElementById(
+      "note-body",
+    ) as HTMLTextAreaElement;
+    const bottomLeft = this.shadowRoot?.getElementById(
+      "bottom-row-left",
+    ) as HTMLSpanElement;
 
-    let measuringSpan = this.shadowRoot?.getElementById('measuring-span');
+    let measuringSpan = this.shadowRoot?.getElementById("measuring-span");
     if (!measuringSpan) {
-      measuringSpan = document.createElement('span');
-      measuringSpan.id = 'measuring-span';
+      measuringSpan = document.createElement("span");
+      measuringSpan.id = "measuring-span";
       this.shadowRoot?.appendChild(measuringSpan);
-      measuringSpan.style.visibility = 'hidden';
-      measuringSpan.style.position = 'fixed';
-      measuringSpan.style.whiteSpace = 'pre';
-      measuringSpan.style.overflow = 'hidden';
+      measuringSpan.style.visibility = "hidden";
+      measuringSpan.style.position = "fixed";
+      measuringSpan.style.whiteSpace = "pre";
+      measuringSpan.style.overflow = "hidden";
       measuringSpan.style.fontFamily = getComputedStyle(textarea).fontFamily;
       measuringSpan.style.fontSize = getComputedStyle(textarea).fontSize;
       measuringSpan.style.fontWeight = getComputedStyle(textarea).fontWeight;
     }
 
     const updateSize = () => {
-      const lines = textarea.value.split('\n');
+      const lines = textarea.value.split("\n");
       let maxWidthRequired = minNoteBodyWidth;
 
-      lines.forEach(line => {
-        if (!measuringSpan) return
+      lines.forEach((line) => {
+        if (!measuringSpan) return;
         measuringSpan.textContent = line;
-        maxWidthRequired = Math.max(maxWidthRequired, measuringSpan.offsetWidth + 5);
+        maxWidthRequired = Math.max(
+          maxWidthRequired,
+          measuringSpan.offsetWidth + 5,
+        );
       });
 
       textarea.style.width = `${Math.min(maxWidthRequired, maxNoteBodyWidth)}px`;
-      textarea.style.height = 'auto';
+      textarea.style.height = "auto";
       textarea.style.height = `${textarea.scrollHeight}px`;
     };
 
     updateSize();
 
-    textarea.addEventListener('input', () => {
-      updateSize()
+    textarea.addEventListener("input", () => {
+      updateSize();
       if (!this.isEditing) {
-        bottomLeft.innerHTML = loadingIcon()
-        this.isEditing = true
+        bottomLeft.innerHTML = loadingIcon();
+        this.isEditing = true;
       }
     });
 
-    textarea.addEventListener('input', debounce((e) => {
-      fetch("/api/notes/edit/body", {
-        method: "PATCH",
-        body: JSON.stringify({ noteId, body: textarea.value }),
-        headers: { "Content-type": "application/json;" }
-      }).then((res) => {
-        // TODO: Get a response here to set lastEditText params with correct values
-        // console.log(res)
+    textarea.addEventListener(
+      "input",
+      debounce((e) => {
+        fetch("/api/notes/edit/body", {
+          method: "PATCH",
+          body: JSON.stringify({ noteId, body: textarea.value }),
+          headers: { "Content-type": "application/json;" },
+        }).then((res) => {
+          // TODO: Get a response here to set lastEditText params with correct values
+          // console.log(res)
 
-        bottomLeft.innerHTML = lastEditText(true, new Date())
-        this.isEditing = false
-      });
-    }, 1000));
+          bottomLeft.innerHTML = lastEditText(true, new Date());
+          this.isEditing = false;
+        });
+      }, 1000),
+    );
   }
 
   addEventListeners(noteId) {
-    this.shadowRoot?.querySelector('#vote-up-btn')?.addEventListener('click', () => this.handleVote(noteId, 1));
-    this.shadowRoot?.querySelector('#vote-down-btn')?.addEventListener('click', () => this.handleVote(noteId, -1));
-    this.shadowRoot?.querySelector(`#delete-${noteId}`)?.addEventListener('click', () => this.handleDelete(noteId));
+    this.shadowRoot
+      ?.querySelector("#vote-up-btn")
+      ?.addEventListener("click", () => this.handleVote(noteId, 1));
+    this.shadowRoot
+      ?.querySelector("#vote-down-btn")
+      ?.addEventListener("click", () => this.handleVote(noteId, -1));
+    this.shadowRoot
+      ?.querySelector(`#delete-${noteId}`)
+      ?.addEventListener("click", () => this.handleDelete(noteId));
   }
 
   handleVote(noteId, newVote) {
-    if (this.localVote === newVote)
-      this.localVote = 0;
-    else
-      this.localVote = newVote;
+    if (this.localVote === newVote) this.localVote = 0;
+    else this.localVote = newVote;
 
     // FIXME: We can't just rerender without a new GET, loses local state e.g. body edit
     this.render();
@@ -271,7 +373,7 @@ class Note extends HTMLElement {
     fetch("/api/notes/vote", {
       method: "PUT",
       body: JSON.stringify({ noteId, like: newVote === 1 }),
-      headers: { "Content-type": "application/json;" }
+      headers: { "Content-type": "application/json;" },
     }).then(() => {
       this.render();
     });
@@ -282,7 +384,7 @@ class Note extends HTMLElement {
       fetch("/api/notes", {
         method: "DELETE",
         body: JSON.stringify({ noteId }),
-        headers: { "Content-type": "application/json;" }
+        headers: { "Content-type": "application/json;" },
       }).then(() => {
         this.remove();
       });
@@ -290,4 +392,4 @@ class Note extends HTMLElement {
   }
 }
 
-customElements.define("note-c", Note)
+customElements.define("note-c", Note);
