@@ -1,14 +1,14 @@
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 open Yojson.Safe.Util
 
-(* 
+(*
 type note = {
   id: string;
   body: string;
   votes: string list;
   todos: todo list;
   tags: string list;
-} 
+}
 
 type todo = {
   title: string;
@@ -79,10 +79,10 @@ let create_note_id () = Printf.sprintf ("%d_%d") (Int.of_float (Unix.time ())) (
   | _ when n <= 0 -> []
   | x :: xs -> x :: take (n - 1) xs *)
 
-let read_notes () = 
-  let json_db = 
+let read_notes () =
+  let json_db =
     try
-      Yojson.Safe.from_file "db.json" 
+      Yojson.Safe.from_file "db.json"
     with
     | _ -> `Assoc [("notes", `List [])]
   in
@@ -110,7 +110,7 @@ let get_notes sourceIp (notes: note list) : json_get_note_response list =
         aux (updated_note :: acc) xs
   in
   aux [] notes
-  
+
 let mutex = Mutex.create ()
 let cached_notes : note list ref = ref []
 
@@ -133,26 +133,26 @@ let handle_exit_signal signal =
   print_endline ("Caught signal: " ^ string_of_int signal);
   save_cache_to_disk ();
   exit 0
-  
+
 let rec periodic_cache_save interval_seconds =
   Lwt.bind (Lwt_unix.sleep interval_seconds)
     (fun () ->
       save_cache_to_disk ();
       periodic_cache_save interval_seconds)
-  
+
 let () =
   initialize_cache ();
 
   Sys.set_signal Sys.sigint (Sys.Signal_handle handle_exit_signal);
   Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_exit_signal);
-  let _ = periodic_cache_save 300.0 in  
+  let _ = periodic_cache_save 300.0 in
 
   Dream.run ~interface:"127.0.0.1" ~port:7050
   @@ Dream.logger
   @@ Dream.origin_referrer_check
   @@ Dream.router [
-    Dream.get "/notes" 
-    (fun request -> 
+    Dream.get "/notes"
+    (fun request ->
       let%lwt body = Dream.body request in
 
       let sourceIp =
@@ -162,10 +162,10 @@ let () =
       in
 
       let notes = process_notes sourceIp in
-      let sorted_notes = 
+      let sorted_notes =
         List.sort (fun a b -> compare b.voteCount a.voteCount) notes
       in
-      `Assoc [("notes", `List (List.map (fun note -> 
+      `Assoc [("notes", `List (List.map (fun note ->
         `Assoc [
           ("id", `String note.id);
           ("body", `String note.body);
@@ -174,7 +174,7 @@ let () =
           ("isUser", `Bool note.isUser);
           ("edited", `Bool note.edited);
           ("lastEdit", `Int note.lastEdit);
-        ]) sorted_notes))]  
+        ]) sorted_notes))]
       |> Yojson.Safe.to_string
       |> Dream.json
     );
@@ -195,7 +195,7 @@ let () =
 
           let new_note = `Assoc[
             ("id", `String note_id);
-            ("body", `String (String.sub post_note_object.body 0 (min (String.length post_note_object.body) 280))); 
+            ("body", `String (String.sub post_note_object.body 0 (min (String.length post_note_object.body) 280)));
             ("likes", `List []);
             ("dislikes", `List []);
             ("sourceIp", `String post_note_object.sourceIp);
@@ -204,22 +204,22 @@ let () =
           ] in
 
           (* let all_notes = new_note :: read_notes () in
-          let trimmed_notes = 
+          let trimmed_notes =
             match all_notes with
             | [] -> []
-            | _ -> all_notes |> take 30 
+            | _ -> all_notes |> take 30
           in *)
 
           cached_notes := (new_note |> note_of_yojson) :: !cached_notes;
-          
+
           `Assoc[
-            ("body", new_note |> member "body"); 
+            ("body", new_note |> member "body");
             ("id", new_note |> member "id")
           ]
           |> Yojson.Safe.to_string
           |> Dream.json
         in
-  
+
         Lwt.finalize handle_request (fun () ->
           Mutex.unlock mutex;
           Lwt.return_unit
@@ -240,24 +240,24 @@ let () =
 
             let all_notes = !cached_notes in
 
-            let updated_notes = 
+            let updated_notes =
               List.map (fun (note: note) ->
                 if note.id = post_vote_object.noteId then
                   let already_liked = List.exists ((=) post_vote_object.sourceIp) note.likes in
                   let already_disliked = List.exists ((=) post_vote_object.sourceIp) note.dislikes in
-            
+
                   let updated_likes, updated_dislikes =
                     match post_vote_object.like, already_liked, already_disliked with
-                    | true, true, _ -> 
+                    | true, true, _ ->
                       (* Already liked, remove the like *)
                       List.filter ((<>) post_vote_object.sourceIp) note.likes, note.dislikes
-                    | false, _, true -> 
+                    | false, _, true ->
                       (* Already disliked, remove the dislike *)
                       note.likes, List.filter ((<>) post_vote_object.sourceIp) note.dislikes
-                    | true, false, _ -> 
+                    | true, false, _ ->
                       (* No like, add the like *)
                       post_vote_object.sourceIp :: note.likes, List.filter ((<>) post_vote_object.sourceIp) note.dislikes
-                    | false, _, false -> 
+                    | false, _, false ->
                       (* No dislike, add the dislike *)
                       List.filter ((<>) post_vote_object.sourceIp) note.likes, post_vote_object.sourceIp :: note.dislikes
                   in
@@ -268,7 +268,7 @@ let () =
             in
 
             cached_notes := updated_notes;
-            
+
             `String "Vote recorded"
             |> Yojson.Safe.to_string
             |> Dream.respond
@@ -294,10 +294,10 @@ let () =
 
             let all_notes = !cached_notes in
 
-            let updated_notes = 
+            let updated_notes =
               List.map (fun (note: note) ->
                 if note.id = patch_edit_body_object.noteId && note.sourceIp = patch_edit_body_object.sourceIp then
-                  { note with 
+                  { note with
                   body = patch_edit_body_object.body;
                   edits = note.edits + 1;
                   lastEdit = int_of_float (Unix.time () *. 1000.0); }
@@ -307,7 +307,7 @@ let () =
             in
 
             cached_notes := updated_notes;
-            
+
             `String "Note edited"
             |> Yojson.Safe.to_string
             |> Dream.respond
@@ -333,14 +333,14 @@ let () =
 
           let all_notes = !cached_notes in
 
-          let undeleted_notes = 
+          let undeleted_notes =
             List.filter (fun (note: note) ->
-              not ((=) note.id delete_note_object.noteId) && ((=) note.sourceIp delete_note_object.sourceIp)
+              (note.id <> delete_note_object.noteId) || (note.sourceIp <> delete_note_object.sourceIp)
             ) all_notes
           in
 
           cached_notes := undeleted_notes;
-          
+
           "HTTP/1.1 200 OK"
           |> Dream.respond
         in

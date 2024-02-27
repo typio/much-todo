@@ -1,11 +1,5 @@
 const config = @import("config");
 const std = @import("std");
-const os = std.os;
-const net = std.net;
-const fs = std.fs;
-const fmt = std.fmt;
-const Allocator = std.mem.Allocator;
-const io = std.io;
 
 const cli = @import("zig-cli");
 

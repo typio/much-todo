@@ -1,5 +1,5 @@
-const maxNoteBodyWidth = Math.min(420, window.innerWidth - 96);
-const minNoteBodyWidth = 160;
+const maxNoteBodyWidth = Math.min(420, window.innerWidth - 96)
+const minNoteBodyWidth = 160
 
 const loadingIcon = () =>
   html`<svg width="20px" height="20px">
@@ -23,24 +23,24 @@ const loadingIcon = () =>
   animation: rotating 1s linear infinite;
   transform-origin: center;"
     />
-  </svg>`;
+  </svg>`
 
 const lastEditText = (edited: boolean, lastEdit = new Date()) => {
-  const MS_IN_HOUR = 1000 * 60 * 60;
-  const MS_IN_DAY = MS_IN_HOUR * 24;
-  const MS_IN_WEEK = MS_IN_DAY * 7;
-  const ms_since_edit = new Date().getTime() - lastEdit?.getTime();
+  const MS_IN_HOUR = 1000 * 60 * 60
+  const MS_IN_DAY = MS_IN_HOUR * 24
+  const MS_IN_WEEK = MS_IN_DAY * 7
+  const ms_since_edit = new Date().getTime() - lastEdit?.getTime()
 
   const sameDate =
     lastEdit?.getDate() === new Date().getDate() &&
     lastEdit?.getMonth() === new Date().getMonth() &&
-    lastEdit?.getFullYear() === new Date().getFullYear();
+    lastEdit?.getFullYear() === new Date().getFullYear()
 
-  const sameDayInterval = ms_since_edit < MS_IN_DAY;
+  const sameDayInterval = ms_since_edit < MS_IN_DAY
 
-  const sameWeekInterval = ms_since_edit < MS_IN_WEEK;
+  const sameWeekInterval = ms_since_edit < MS_IN_WEEK
 
-  const sameYearDate = lastEdit?.getFullYear() === new Date().getFullYear();
+  const sameYearDate = lastEdit?.getFullYear() === new Date().getFullYear()
 
   const timestampString = sameDate
     ? lastEdit.toLocaleTimeString(undefined, {
@@ -48,7 +48,7 @@ const lastEditText = (edited: boolean, lastEdit = new Date()) => {
         hour: "numeric",
       })
     : sameDayInterval
-      ? ((h) => `${h} hour{d > 1 ? "s" : ""} ago`)(
+      ? ((h) => `${h} hour${h > 1 ? "s" : ""} ago`)(
           Math.floor(ms_since_edit / MS_IN_HOUR),
         )
       : sameWeekInterval
@@ -64,15 +64,15 @@ const lastEditText = (edited: boolean, lastEdit = new Date()) => {
               year: "numeric",
               month: "short",
               day: "numeric",
-            });
+            })
 
   return html`<p class="last-edit-text">
     ${edited ? "Edited" : "Created"} ${timestampString}
-  </p>`;
-};
+  </p>`
+}
 class Note extends HTMLElement {
-  localVote = 0;
-  isEditing = false;
+  localVote = 0
+  isEditing = false
 
   static get observedAttributes() {
     return [
@@ -83,12 +83,12 @@ class Note extends HTMLElement {
       "votes",
       "edited",
       "lastedit",
-    ];
+    ]
   }
 
   constructor() {
-    super();
-    this.attachShadow({ mode: "open" });
+    super()
+    this.attachShadow({ mode: "open" })
   }
 
   // attributeChangedCallback(name, oldValue, newValue) {
@@ -98,43 +98,43 @@ class Note extends HTMLElement {
   // }
 
   render() {
-    if (this.shadowRoot === null) return;
+    if (this.shadowRoot === null) return
 
-    const noteId = this.getAttribute("noteid");
-    const body = this.getAttribute("body"); //?.replace(/\n/g, '<br>');
-    let userVote = Number(this.getAttribute("userVote"));
-    const voteCount = Number(this.getAttribute("votes")) ?? 0;
-    const isUser = this.getAttribute("isuser") === "true";
+    const noteId = this.getAttribute("noteid")
+    const body = this.getAttribute("body") //?.replace(/\n/g, '<br>');
+    let userVote = Number(this.getAttribute("userVote"))
+    const voteCount = Number(this.getAttribute("votes")) ?? 0
+    const isUser = this.getAttribute("isuser") === "true"
 
-    const edited = this.getAttribute("edited") === "true";
+    const edited = this.getAttribute("edited") === "true"
 
     const lastEdit = ((d) => (d ? new Date(Number(d)) : new Date()))(
       this.getAttribute("lastedit"),
-    );
+    )
 
-    let displayVote = voteCount;
+    let displayVote = voteCount
 
     if (this.localVote === 1) {
       if (userVote === 1) {
-        userVote = 0;
-        displayVote--;
+        userVote = 0
+        displayVote--
       } else if (userVote === -1) {
-        userVote = 1;
-        displayVote += 2;
+        userVote = 1
+        displayVote += 2
       } else {
-        userVote = this.localVote;
-        displayVote++;
+        userVote = this.localVote
+        displayVote++
       }
     } else if (this.localVote === -1) {
       if (userVote === 1) {
-        userVote = -1;
-        displayVote -= 2;
+        userVote = -1
+        displayVote -= 2
       } else if (userVote === -1) {
-        userVote = 0;
-        displayVote++;
+        userVote = 0
+        displayVote++
       } else {
-        userVote = this.localVote;
-        displayVote--;
+        userVote = this.localVote
+        displayVote--
       }
     }
     // FIXME: Partially incorrect behavior after multiple local votes, because userVote changes are't persisted
@@ -248,11 +248,11 @@ ${body}</textarea
         }
 
         .vote-tally {
-          font-size: 0.85rem;
+          font-size: 0.8rem;
           color: var(--text);
           margin: 0;
-          margin-right: 8px;
-          font-weight: 600;
+          margin-right: 4px;
+          font-weight: 500;
         }
 
         .vote-btn {
@@ -277,61 +277,61 @@ ${body}</textarea
           opacity: 1;
         }
       </style>
-    `;
+    `
 
-    this.addEventListeners(noteId);
-    this.adjustTextareaSize(noteId);
+    this.addEventListeners(noteId)
+    this.adjustTextareaSize(noteId)
   }
 
   adjustTextareaSize(noteId) {
     const textarea = this.shadowRoot?.getElementById(
       "note-body",
-    ) as HTMLTextAreaElement;
+    ) as HTMLTextAreaElement
     const bottomLeft = this.shadowRoot?.getElementById(
       "bottom-row-left",
-    ) as HTMLSpanElement;
+    ) as HTMLSpanElement
 
-    let measuringSpan = this.shadowRoot?.getElementById("measuring-span");
+    let measuringSpan = this.shadowRoot?.getElementById("measuring-span")
     if (!measuringSpan) {
-      measuringSpan = document.createElement("span");
-      measuringSpan.id = "measuring-span";
-      this.shadowRoot?.appendChild(measuringSpan);
-      measuringSpan.style.visibility = "hidden";
-      measuringSpan.style.position = "fixed";
-      measuringSpan.style.whiteSpace = "pre";
-      measuringSpan.style.overflow = "hidden";
-      measuringSpan.style.fontFamily = getComputedStyle(textarea).fontFamily;
-      measuringSpan.style.fontSize = getComputedStyle(textarea).fontSize;
-      measuringSpan.style.fontWeight = getComputedStyle(textarea).fontWeight;
+      measuringSpan = document.createElement("span")
+      measuringSpan.id = "measuring-span"
+      this.shadowRoot?.appendChild(measuringSpan)
+      measuringSpan.style.visibility = "hidden"
+      measuringSpan.style.position = "fixed"
+      measuringSpan.style.whiteSpace = "pre"
+      measuringSpan.style.overflow = "hidden"
+      measuringSpan.style.fontFamily = getComputedStyle(textarea).fontFamily
+      measuringSpan.style.fontSize = getComputedStyle(textarea).fontSize
+      measuringSpan.style.fontWeight = getComputedStyle(textarea).fontWeight
     }
 
     const updateSize = () => {
-      const lines = textarea.value.split("\n");
-      let maxWidthRequired = minNoteBodyWidth;
+      const lines = textarea.value.split("\n")
+      let maxWidthRequired = minNoteBodyWidth
 
       lines.forEach((line) => {
-        if (!measuringSpan) return;
-        measuringSpan.textContent = line;
+        if (!measuringSpan) return
+        measuringSpan.textContent = line
         maxWidthRequired = Math.max(
           maxWidthRequired,
           measuringSpan.offsetWidth + 5,
-        );
-      });
+        )
+      })
 
-      textarea.style.width = `${Math.min(maxWidthRequired, maxNoteBodyWidth)}px`;
-      textarea.style.height = "auto";
-      textarea.style.height = `${textarea.scrollHeight}px`;
-    };
+      textarea.style.width = `${Math.min(maxWidthRequired, maxNoteBodyWidth)}px`
+      textarea.style.height = "auto"
+      textarea.style.height = `${textarea.scrollHeight}px`
+    }
 
-    updateSize();
+    updateSize()
 
     textarea.addEventListener("input", () => {
-      updateSize();
+      updateSize()
       if (!this.isEditing) {
-        bottomLeft.innerHTML = loadingIcon();
-        this.isEditing = true;
+        bottomLeft.innerHTML = loadingIcon()
+        this.isEditing = true
       }
-    });
+    })
 
     textarea.addEventListener(
       "input",
@@ -344,39 +344,39 @@ ${body}</textarea
           // TODO: Get a response here to set lastEditText params with correct values
           // console.log(res)
 
-          bottomLeft.innerHTML = lastEditText(true, new Date());
-          this.isEditing = false;
-        });
+          bottomLeft.innerHTML = lastEditText(true, new Date())
+          this.isEditing = false
+        })
       }, 1000),
-    );
+    )
   }
 
   addEventListeners(noteId) {
     this.shadowRoot
       ?.querySelector("#vote-up-btn")
-      ?.addEventListener("click", () => this.handleVote(noteId, 1));
+      ?.addEventListener("click", () => this.handleVote(noteId, 1))
     this.shadowRoot
       ?.querySelector("#vote-down-btn")
-      ?.addEventListener("click", () => this.handleVote(noteId, -1));
+      ?.addEventListener("click", () => this.handleVote(noteId, -1))
     this.shadowRoot
       ?.querySelector(`#delete-${noteId}`)
-      ?.addEventListener("click", () => this.handleDelete(noteId));
+      ?.addEventListener("click", () => this.handleDelete(noteId))
   }
 
   handleVote(noteId, newVote) {
-    if (this.localVote === newVote) this.localVote = 0;
-    else this.localVote = newVote;
+    if (this.localVote === newVote) this.localVote = 0
+    else this.localVote = newVote
 
     // FIXME: We can't just rerender without a new GET, loses local state e.g. body edit
-    this.render();
+    this.render()
 
     fetch("/api/notes/vote", {
       method: "PUT",
       body: JSON.stringify({ noteId, like: newVote === 1 }),
       headers: { "Content-type": "application/json;" },
     }).then(() => {
-      this.render();
-    });
+      this.render()
+    })
   }
 
   handleDelete(noteId) {
@@ -386,10 +386,10 @@ ${body}</textarea
         body: JSON.stringify({ noteId }),
         headers: { "Content-type": "application/json;" },
       }).then(() => {
-        this.remove();
-      });
+        this.remove()
+      })
     }
   }
 }
 
-customElements.define("note-c", Note);
+customElements.define("note-c", Note)
